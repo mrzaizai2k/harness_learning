@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+.env
+.flaky_read_markers
+*.json

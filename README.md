@@ -1,6 +1,6 @@
 # Harness Learning Project
 
-This is a project to learn Harness.
+This is a project to learn harness.
 
 ## About mrzaizai2k
 
