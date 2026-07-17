@@ -11,3 +11,4 @@ wheels/
 .env
 .flaky_read_markers
 *.json
+frontend/node_modules/

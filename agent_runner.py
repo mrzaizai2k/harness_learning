@@ -21,7 +21,8 @@ import os
 import uuid
 
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import InMemorySaver
+# from langgraph.checkpoint.memory import InMemorySaver
+from json_saver import JsonFileSaver
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
@@ -63,7 +64,7 @@ class DeepAgentRunner:
         self.root_dir = os.path.abspath(root_dir or os.path.dirname(__file__))
 
         self.crash_controller = CrashController()
-        self.checkpointer = InMemorySaver()
+        self.checkpointer = JsonFileSaver(state_path="state.json", memory_path="memory.json")
         self.model = ChatOpenAI(model=model_name, api_key=os.environ.get("OPENAI_API_KEY"))
 
         crash_controller = self.crash_controller  # local ref for closures
