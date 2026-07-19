@@ -1,3 +1,4 @@
+
 """
 DeepAgentRunner
 ===============
@@ -30,9 +31,9 @@ container.
 
 import os
 import uuid
-
+import yaml
+from pathlib import Path
 from dotenv import load_dotenv
-# from langgraph.checkpoint.memory import InMemorySaver
 from json_saver import JsonFileSaver
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -40,10 +41,73 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from pydantic_ai_backends import RuntimeConfig
-
 from docker_sandbox import PydanticDockerSandboxBackend
 
+# Import tools from tool_manager
+from tool_manager import (
+    web_search,
+    generate_hashtags,
+    download_image,
+    move_file,
+)
+
 load_dotenv()
+
+
+def load_subagents(config_path: Path) -> list:
+    """Load subagent definitions from YAML and wire up tools.
+    
+    NOTE: This is a custom utility for this example. Unlike `memory` and `skills`,
+    deepagents doesn't natively load subagents from files - they're normally
+    defined inline in the create_deep_agent() call. We externalize to YAML here
+    to keep configuration separate from code.
+    """
+    available_tools = {
+        "web_search": web_search,
+    }
+    
+    if not config_path.exists():
+        print(f"Warning: Subagents config not found at {config_path}")
+        return []
+    
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+        
+        if not config:
+            print("Warning: Empty subagents configuration")
+            return []
+        
+        subagents = []
+        for name, spec in config.items():
+            if not isinstance(spec, dict):
+                print(f"Warning: Invalid spec for subagent '{name}', skipping")
+                continue
+            
+            subagent = {
+                "name": name,
+                "description": spec.get("description", ""),
+                "system_prompt": spec.get("system_prompt", ""),
+            }
+            
+            if "model" in spec:
+                subagent["model"] = spec["model"]
+            
+            if "tools" in spec:
+                tools = []
+                for tool_name in spec["tools"]:
+                    if tool_name in available_tools:
+                        tools.append(available_tools[tool_name])
+                    else:
+                        print(f"Warning: Unknown tool '{tool_name}' for subagent '{name}'")
+                subagent["tools"] = tools
+            
+            subagents.append(subagent)
+        
+        return subagents
+    except Exception as e:
+        print(f"Error loading subagents: {e}")
+        return []
 
 
 class CrashController:
@@ -61,7 +125,7 @@ class CrashController:
 
     def maybe_crash(self, context: str):
         if self.armed:
-            self.armed = False  # fires once, like the original flaky_read
+            self.armed = False
             raise RuntimeError(f"Simulated crash during: {context}")
 
 
@@ -95,10 +159,6 @@ class DeepAgentRunner:
         concurrent access, whereas one shared instance safely multiplexes
         threads via `thread_id` in `config`, same as the original design.
         """
-        # Default to the folder this file lives in, NOT the process's cwd —
-        # otherwise behavior silently depends on where `streamlit run` was
-        # launched from. Only meaningful for the local FilesystemBackend;
-        # Docker backends use their own in-container workdir.
         self.root_dir = os.path.abspath(root_dir or os.path.dirname(__file__))
 
         self.crash_controller = CrashController()
@@ -116,14 +176,14 @@ class DeepAgentRunner:
                 container_name=docker_container_name,
                 volumes=docker_volumes,
                 work_dir=docker_work_dir,
-                auto_copy_files=True,  # Enable automatic file copying
-                source_dir=self.root_dir,  # Copy from your project directory
+                auto_copy_files=True,
+                source_dir=self.root_dir,
             )
         else:
             self.backend = FilesystemBackend(root_dir=self.root_dir, virtual_mode=True)
 
-        crash_controller = self.crash_controller  # local ref for closures
-        backend_ref = self.backend  # local ref for closures
+        crash_controller = self.crash_controller
+        backend_ref = self.backend
 
         @tool
         def list_files(directory: str = "/") -> str:
@@ -149,11 +209,24 @@ class DeepAgentRunner:
             crash_controller.maybe_crash("count_words")
             return len(text.split())
 
+        tools = [
+            list_files,
+            read_file,
+            count_words,
+            generate_hashtags,
+            download_image,
+            web_search,
+            move_file,
+        ]
+
         self.agent = create_deep_agent(
             model=self.model,
             backend=self.backend,
-            tools=[list_files, read_file, count_words],
+            tools=tools,
+            subagents=load_subagents(Path("./subagents.yaml")),
             checkpointer=self.checkpointer,
+            memory=["./AGENTS.md"],
+            skills=["./skills/"],
         )
 
     def close(self):
@@ -162,9 +235,6 @@ class DeepAgentRunner:
         if callable(close_fn):
             close_fn()
 
-    # ------------------------------------------------------------------ #
-    # helpers
-    # ------------------------------------------------------------------ #
     @staticmethod
     def new_thread_id() -> str:
         return uuid.uuid4().hex[:8]
@@ -177,9 +247,6 @@ class DeepAgentRunner:
         """Arm the crash flag: the next tool call will raise an exception."""
         self.crash_controller.arm()
 
-    # ------------------------------------------------------------------ #
-    # running / resuming, as generators so a UI can render progress live
-    # ------------------------------------------------------------------ #
     def stream_run(self, task: str, thread_id: str):
         """Start a brand-new task on `thread_id`, yielding events as they happen."""
         config = self._config(thread_id)
@@ -190,7 +257,7 @@ class DeepAgentRunner:
                 stream_mode="values",
             ):
                 yield {"type": "step", "data": event}
-        except Exception as e:  # noqa: BLE001 - intentionally broad, this is a demo
+        except Exception as e:
             yield {"type": "crash", "error": str(e)}
 
     def stream_resume(self, thread_id: str):
@@ -199,12 +266,9 @@ class DeepAgentRunner:
         try:
             for event in self.agent.stream(None, config, stream_mode="values"):
                 yield {"type": "step", "data": event}
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             yield {"type": "crash", "error": str(e)}
 
-    # ------------------------------------------------------------------ #
-    # introspection
-    # ------------------------------------------------------------------ #
     def get_state(self, thread_id: str):
         return self.agent.get_state(self._config(thread_id))
 

@@ -129,7 +129,7 @@ class PydanticDockerSandboxBackend(BaseSandbox):
             ".venv/**",
             "venv",
             "venv/**",
-            ".env",
+            # ".env",
             "*.egg-info",
             "*.egg-info/**",
             ".pytest_cache",

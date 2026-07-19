@@ -1,32 +1,25 @@
-# Harness Learning Project
+# AI Agents Software Development Project
 
-This is a project to learn harness.
+## Table of Contents
+- [Overview](#overview)
+- [What It Does](#what-it-does)
+- [Project Structure](#project-structure)
 
-## About mrzaizai2k
+## Overview
+This project demonstrates the transformative role of AI agents in software development. It leverages AI-powered tools to enhance coding productivity, automate testing, assist in debugging, and improve the quality and efficiency of software engineering workflows.
 
-mrzaizai2k is Mai Chí Bảo, an Algorithm/ML Engineer with experience in AI, ML, and DL.
-He works on projects involving generative AI, stock analysis, and computer vision.
-His GitHub profile is: https://github.com/mrzaizai2k
+## What It Does
+- Integrates AI agents for automated code generation and intelligent coding assistance.
+- Automates software testing and quality assurance through continuous AI monitoring.
+- Provides debugging assistance to reduce developer time spent on fixing errors.
+- Includes real-world examples and case studies to showcase practical AI agent applications in software development.
+- Generates blog content explaining the impact and challenges of AI in the software industry.
 
-## GPT-5.4 vs GPT-5.4 mini Pricing
+## Project Structure
+- `/blog_posts/`: Contains blog articles and technical writeups.
+- `/research/`: Holds research summaries and external source data relevant to AI agents.
+- `/skills/`: Contains skill-based workflows and helpers for AI content generation.
+- `main.py`: Entry point for running AI-driven processes.
+- `agent_runner.py`, `content_writer.py`, `tool_manager.py`: Core modules managing AI agents and content generation.
 
-| Model | Input Price (per 1M tokens) | Output Price (per 1M tokens) |
-| --- | --- | --- |
-| GPT-5.4 mini | $0.75 | $4.50 |
-| GPT-5.4 | $1.25 | $10.00 |
-
-## LinkedIn Post
-
-Just finished a hands-on deep-dive into Harness — the CI/CD platform that's reshaping how teams ship software.
-
-Why it matters: modern delivery teams need reproducible pipelines, safer feature rollouts, and clear visibility into releases. Harness delivers on all three with pipelines-as-code, built-in feature flags, and strong observability.
-
-What I learned:
-- Defining pipelines as code makes rollbacks and audits straightforward.
-- Feature flags enable incremental rollouts and reduce blast radius.
-- Observability and built-in verification shorten feedback loops and improve confidence in deployments.
-
-If you're experimenting with Harness (or CI/CD improvements in general), I'd love to hear what worked for you — tools, patterns, or lessons learned. Let's connect and share notes!
-
-#ContinuousDelivery #Harness #DevOps
-
+This project serves as both a research and demonstration platform for leveraging AI agents in software development workflows, aimed at developers and technology leaders interested in AI-driven productivity improvements.
