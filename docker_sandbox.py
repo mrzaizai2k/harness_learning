@@ -2,49 +2,14 @@
 docker_sandbox.py
 ==================
 Adapter that lets deepagents use `pydantic_ai_backends.DockerSandbox` as its
-sandbox backend, so you get deepagents' agent runtime (tool derivation,
-checkpointing, `create_deep_agent`) driving a container that pydantic-ai's
-own DockerSandbox manages (runtime presets, named/reusable containers,
-volume mounts, idle timeout).
-
-Why an adapter, not "just use one class for both"
---------------------------------------------------
-pydantic-ai-backend's `DockerSandbox` and deepagents' `BaseSandbox` solve
-overlapping problems but are different protocols:
-
-  * pydantic's `DockerSandbox` extends *its own* `BaseSandbox` and implements
-    `read()` / `write()` / `edit()` directly against the container (with
-    encoding detection, PDF text extraction, etc.), plus `execute()`.
-  * deepagents' `BaseSandbox` is an ABC that *derives* `ls` / `read` / `edit`
-    / `grep` / `glob` from just two primitives you provide: `execute()` and
-    `upload_files()` (+ `download_files()`).
-
-The good news: the dataclasses line up field-for-field
-(`ExecuteResponse(output, exit_code, truncated)`,
-`WriteResult(path, error)`, `EditResult(path, occurrences, error)`), so the
-bridge is just three methods:
-
-  * `execute()`       -> pure passthrough to `DockerSandbox.execute()`
-  * `upload_files()`  -> built on `DockerSandbox.write()`
-  * `download_files()`-> built on `DockerSandbox.read_bytes()`, with an
-                         existence check via `execute()` first (since
-                         `read_bytes()` returns `b""` for both "missing"
-                         and "legitimately empty" files -- that ambiguity
-                         needs to be resolved before deepagents sees it)
-
-Everything else deepagents' agent calls (`ls`, `read`, `grep`, `glob`, and
-even `write`/`edit` when routed through the agent's tools) comes for free
-from `BaseSandbox`, built on top of those three methods. Pydantic's own
-`read()` / `write()` / `edit()` are only used indirectly, as thin transports
-(`write()` for upload, `read_bytes()` for download) -- their fancier
-behavior (chardet detection, PDF extraction) isn't exercised here since
-deepagents does its own file-type handling in its `read()`.
+sandbox backend, with automatic path scoping to the working directory.
 """
 
 from __future__ import annotations
 
 import asyncio
 import shlex
+from pathlib import PurePosixPath
 
 from pydantic_ai_backends import DockerSandbox, RuntimeConfig
 
@@ -59,8 +24,36 @@ from deepagents.backends.sandbox import BaseSandbox
 class PydanticDockerSandboxBackend(BaseSandbox):
     """deepagents sandbox backend, backed by a `pydantic_ai_backends.DockerSandbox`."""
 
-    def __init__(self, sandbox: DockerSandbox):
+    def __init__(self, sandbox: DockerSandbox, work_dir: str = "/workspace"):
         self._sandbox = sandbox
+        self._work_dir = work_dir.rstrip('/')
+
+    def _normalize_path(self, path: str) -> str:
+        """
+        Normalize a path to be relative to the working directory.
+        
+        - If path is absolute and starts with work_dir, keep as-is
+        - If path is absolute but NOT under work_dir, make it relative to work_dir
+        - If path is relative, join with work_dir
+        - Special case: "/" becomes work_dir
+        """
+        path = path.strip()
+        
+        # Special case: root directory maps to work_dir
+        if path == "/" or path == "":
+            return self._work_dir
+        
+        # If it's already absolute and under work_dir, keep it
+        if path.startswith(self._work_dir + "/") or path == self._work_dir:
+            return path
+        
+        # If it's absolute but not under work_dir, strip leading / and join
+        if path.startswith("/"):
+            path = path.lstrip("/")
+        
+        # Join relative path with work_dir
+        normalized = str(PurePosixPath(self._work_dir) / path)
+        return normalized
 
     @classmethod
     def create(
@@ -75,13 +68,7 @@ class PydanticDockerSandboxBackend(BaseSandbox):
         idle_timeout: int = 3600,
         session_id: str | None = None,
     ) -> "PydanticDockerSandboxBackend":
-        """Convenience constructor mirroring `DockerSandbox`'s own kwargs.
-
-        Args mirror `pydantic_ai_backends.DockerSandbox.__init__` directly --
-        see that class's docstring for details (runtime presets,
-        `container_name` for reusable containers, `volumes` for persistent
-        storage, etc.).
-        """
+        """Convenience constructor mirroring `DockerSandbox`'s own kwargs."""
         sandbox = DockerSandbox(
             image=image,
             runtime=runtime,
@@ -92,32 +79,32 @@ class PydanticDockerSandboxBackend(BaseSandbox):
             idle_timeout=idle_timeout,
             session_id=session_id,
         )
-        return cls(sandbox)
+        return cls(sandbox, work_dir=work_dir)
 
     # ------------------------------------------------------------------ #
-    # SandboxBackendProtocol
+    # SandboxBackendProtocol - with path normalization
     # ------------------------------------------------------------------ #
     @property
     def id(self) -> str:
         return self._sandbox.session_id
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        # Identical ExecuteResponse shape on both sides -- pure passthrough.
-        return self._sandbox.execute(command, timeout=timeout)
+        # Execute commands with work_dir as the working directory
+        wrapped_command = f"cd {shlex.quote(self._work_dir)} && {command}"
+        return self._sandbox.execute(wrapped_command, timeout=timeout)
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        # DockerSandbox.execute() is sync (docker-py has no async client);
-        # offload to a thread so async callers don't block the event loop.
         return await asyncio.to_thread(self.execute, command, timeout=timeout)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         responses: list[FileUploadResponse] = []
         for path, content in files:
-            result = self._sandbox.write(path, content)
+            normalized_path = self._normalize_path(path)
+            result = self._sandbox.write(normalized_path, content)
             if result.error:
-                responses.append(FileUploadResponse(path=path, error=result.error))
+                responses.append(FileUploadResponse(path=normalized_path, error=result.error))
             else:
-                responses.append(FileUploadResponse(path=result.path or path))
+                responses.append(FileUploadResponse(path=result.path or normalized_path))
         return responses
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -126,19 +113,73 @@ class PydanticDockerSandboxBackend(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         responses: list[FileDownloadResponse] = []
         for path in paths:
-            # read_bytes() returns b"" for both "missing" and "empty" files.
-            # Disambiguate with a cheap existence check before trusting an
-            # empty result.
-            check = self._sandbox.execute(f"test -e {shlex.quote(path)}")
+            normalized_path = self._normalize_path(path)
+            check = self._sandbox.execute(f"test -e {shlex.quote(normalized_path)}")
             if check.exit_code != 0:
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                responses.append(FileDownloadResponse(path=normalized_path, content=None, error="file_not_found"))
                 continue
-            content = self._sandbox.read_bytes(path)
-            responses.append(FileDownloadResponse(path=path, content=content))
+            content = self._sandbox.read_bytes(normalized_path)
+            responses.append(FileDownloadResponse(path=normalized_path, content=content))
         return responses
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         return await asyncio.to_thread(self.download_files, paths)
+
+    # ------------------------------------------------------------------ #
+    # Override BaseSandbox high-level methods to inject path normalization
+    def ls(self, path: str = "/"):
+        """Override ls to normalize the path before delegating to parent."""
+        normalized_path = self._normalize_path(path)
+        return super().ls(normalized_path)
+
+    async def als(self, path: str = "/"):
+        """Async version of ls with path normalization."""
+        return await asyncio.to_thread(self.ls, path)
+
+    def read(self, path: str):
+        """Override read to normalize the path before delegating to parent."""
+        normalized_path = self._normalize_path(path)
+        return super().read(normalized_path)
+
+    async def aread(self, path: str):
+        """Async version of read with path normalization."""
+        return await asyncio.to_thread(self.read, path)
+
+    def write(self, path: str, content: str):
+        """Override write to normalize the path before delegating to parent."""
+        normalized_path = self._normalize_path(path)
+        return super().write(normalized_path, content)
+
+    async def awrite(self, path: str, content: str):
+        """Async version of write with path normalization."""
+        return await asyncio.to_thread(self.write, path, content)
+
+    def edit(self, path: str, old_str: str, new_str: str, *, occurrences: int | None = None):
+        """Override edit to normalize the path before delegating to parent."""
+        normalized_path = self._normalize_path(path)
+        return super().edit(normalized_path, old_str, new_str, occurrences=occurrences)
+
+    async def aedit(self, path: str, old_str: str, new_str: str, *, occurrences: int | None = None):
+        """Async version of edit with path normalization."""
+        return await asyncio.to_thread(self.edit, path, old_str, new_str, occurrences=occurrences)
+
+    def grep(self, pattern: str, path: str = "/", *, case_sensitive: bool = True):
+        """Override grep to normalize the path before delegating to parent."""
+        normalized_path = self._normalize_path(path)
+        return super().grep(pattern, normalized_path, case_sensitive=case_sensitive)
+
+    async def agrep(self, pattern: str, path: str = "/", *, case_sensitive: bool = True):
+        """Async version of grep with path normalization."""
+        return await asyncio.to_thread(self.grep, pattern, path, case_sensitive=case_sensitive)
+
+    def glob(self, pattern: str, path: str = "/"):
+        """Override glob to normalize the path before delegating to parent."""
+        normalized_path = self._normalize_path(path)
+        return super().glob(pattern, normalized_path)
+
+    async def aglob(self, pattern: str, path: str = "/"):
+        """Async version of glob with path normalization."""
+        return await asyncio.to_thread(self.glob, pattern, path)
 
     # ------------------------------------------------------------------ #
     # lifecycle passthroughs
@@ -156,12 +197,7 @@ class PydanticDockerSandboxBackend(BaseSandbox):
 
 
 class PydanticDockerSandboxManager:
-    """Multi-user session manager built on `PydanticDockerSandboxBackend`.
-
-    Gives each user_id its own named, reusable container + persistent host
-    directory, mirroring pydantic-ai-backend's own `SessionManager` pattern
-    but wired up for deepagents.
-    """
+    """Multi-user session manager built on `PydanticDockerSandboxBackend`."""
 
     def __init__(
         self,
