@@ -5,8 +5,19 @@ Endpoints
 ---------
 POST /api/run          {task, thread_id?}  -> starts a new task, streams SSE
 POST /api/resume       {thread_id}         -> resumes a crashed task, streams SSE
-POST /api/arm_crash    {}                  -> arms the crash flag (fires on next tool call)
+POST /api/arm_crash    {thread_id}         -> arms that thread's crash flag (fires on next tool call)
 GET  /api/state/{tid}                      -> {"paused": bool}
+POST /api/close/{tid}                      -> stops and removes that thread's Docker container
+
+Per-thread isolation
+---------------------
+Each conversation `thread_id` gets its OWN `DeepAgentRunner`, and therefore
+its OWN Docker container (named `deepagents_sandbox_<thread_id>`). Threads no
+longer share a filesystem inside the same container. The `model` (ChatOpenAI
+client) and `checkpointer` (JsonFileSaver) ARE shared across all threads --
+those are cheap/safe to share and the checkpointer already multiplexes
+threads via `thread_id` in its `config`, same as the original single-runner
+design; only the sandbox needed to be split out.
 
 Run with:
     uvicorn main:app --reload --port 8000
@@ -14,14 +25,17 @@ Run with:
 
 import json
 import asyncio
+import os
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from langchain_openai import ChatOpenAI
 
 from agent_runner import DeepAgentRunner  # <- your uploaded module, save it as deep_agent_runner.py
+from json_saver import JsonFileSaver
 
 app = FastAPI()
 
@@ -32,8 +46,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Single shared runner/crash_controller instance, same as the original script.
-runner = DeepAgentRunner()
+# Shared across every thread: cheap to construct, and JsonFileSaver is
+# designed to multiplex many threads over one store. Only the Docker
+# backend is actually duplicated per thread (see RunnerPool below).
+_shared_model = ChatOpenAI(model="gpt-4.1-mini", api_key=os.environ.get("OPENAI_API_KEY"))
+_shared_checkpointer = JsonFileSaver(state_path="state.json", memory_path="memory.json")
+
+
+class RunnerPool:
+    """Lazily creates one `DeepAgentRunner` (and one Docker container) per
+    `thread_id`, so concurrent conversations never write into each other's
+    container filesystem."""
+
+    def __init__(self):
+        self._runners: dict[str, DeepAgentRunner] = {}
+
+    def get_or_create(self, thread_id: str) -> DeepAgentRunner:
+        if thread_id not in self._runners:
+            self._runners[thread_id] = DeepAgentRunner(
+                model=_shared_model,
+                checkpointer=_shared_checkpointer,
+                use_docker=True,
+                docker_runtime="python-minimal",
+                docker_container_name=f"deepagents_sandbox_{thread_id}",
+            )
+        return self._runners[thread_id]
+
+    def get(self, thread_id: str) -> Optional[DeepAgentRunner]:
+        return self._runners.get(thread_id)
+
+    def close(self, thread_id: str) -> bool:
+        runner = self._runners.pop(thread_id, None)
+        if runner is None:
+            return False
+        runner.close()
+        return True
+
+
+pool = RunnerPool()
 
 
 class RunRequest(BaseModel):
@@ -97,6 +147,7 @@ async def sse_from_sync_generator(gen):
 @app.post("/api/run")
 async def run_task(req: RunRequest):
     thread_id = req.thread_id or DeepAgentRunner.new_thread_id()
+    runner = pool.get_or_create(thread_id)
     gen = runner.stream_run(req.task, thread_id)
 
     async def stream():
@@ -109,18 +160,33 @@ async def run_task(req: RunRequest):
 
 @app.post("/api/resume")
 async def resume_task(req: ThreadRequest):
+    runner = pool.get_or_create(req.thread_id)
     gen = runner.stream_resume(req.thread_id)
     return StreamingResponse(sse_from_sync_generator(gen), media_type="text/event-stream")
 
 
 @app.post("/api/arm_crash")
-async def arm_crash():
-    """Arms the shared CrashController: the very next tool call (in the
-    currently running or next-started stream) will raise."""
+async def arm_crash(req: ThreadRequest):
+    """Arms that thread's CrashController: the very next tool call on
+    `req.thread_id` (in the currently running or next-started stream) will
+    raise."""
+    runner = pool.get_or_create(req.thread_id)
     runner.arm_crash()
-    return {"armed": True}
+    return {"armed": True, "thread_id": req.thread_id}
 
 
 @app.get("/api/state/{thread_id}")
 async def get_state(thread_id: str):
+    runner = pool.get(thread_id)
+    if runner is None:
+        raise HTTPException(status_code=404, detail=f"No runner for thread_id '{thread_id}'")
     return {"paused": runner.is_paused(thread_id)}
+
+
+@app.post("/api/close/{thread_id}")
+async def close_thread(thread_id: str):
+    """Stop and remove that thread's Docker container once you're done with it."""
+    closed = pool.close(thread_id)
+    if not closed:
+        raise HTTPException(status_code=404, detail=f"No runner for thread_id '{thread_id}'")
+    return {"closed": True, "thread_id": thread_id}

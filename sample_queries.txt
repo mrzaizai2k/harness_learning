@@ -1,0 +1,3 @@
+Create test.py file to try do some simple calculating in python
+
+List the file, then read arbitrary file, then count the number of words in that fiel and write summary about file

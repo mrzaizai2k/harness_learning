@@ -9,12 +9,23 @@ demo. Same core idea as the original script:
 is the ONLY thing that tells the checkpointer which conversation/state to
 load. One agent object, one checkpointer -> many independent threads.
 
-Differences from the original script (made for the Streamlit UI):
-  * The old `flaky_read` auto-crashed on the FIRST read of any path.
-    Here the crash is controlled manually via `CrashController`, so the
-    UI can arm/disarm it with a button instead of it being automatic.
-  * Everything that used to be printed to stdout is now yielded as
-    events (`stream_run` / `stream_resume`) so a UI can render it live.
+Backend
+-------
+`DeepAgentRunner` now takes a `backend` (anything implementing deepagents'
+`SandboxBackendProtocol`) instead of hardcoding `FilesystemBackend`. Pass:
+  * nothing                -> local `FilesystemBackend` (original behavior)
+  * `use_docker=True`      -> a `PydanticDockerSandboxBackend` is created for
+                              you, wrapping a `pydantic_ai_backends.DockerSandbox`
+  * `backend=<your obj>`   -> any backend you've already built, e.g. a
+                              `PydanticDockerSandboxBackend` wired to a
+                              persistent, named container, or one pulled from
+                              a `PydanticDockerSandboxManager` for a specific
+                              user
+
+Because `list_files` / `read_file` now go through `backend.ls()` /
+`backend.read()` instead of raw `os.listdir` / `open()`, they work
+identically no matter which backend is plugged in — local disk or Docker
+container.
 """
 
 import os
@@ -27,6 +38,10 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from deepagents.backends.sandbox import SandboxBackendProtocol
+from pydantic_ai_backends import RuntimeConfig
+
+from docker_sandbox import PydanticDockerSandboxBackend
 
 load_dotenv()
 
@@ -57,31 +72,74 @@ class DeepAgentRunner:
     `stream_resume(thread_id)` to continue after a crash.
     """
 
-    def __init__(self, model_name: str = "gpt-4.1-mini", root_dir: str | None = None):
+    def __init__(
+        self,
+        model_name: str = "gpt-4.1-mini",
+        root_dir: str | None = None,
+        backend: SandboxBackendProtocol | None = None,
+        use_docker: bool = False,
+        docker_runtime: str | RuntimeConfig | None = "python-minimal",
+        docker_container_name: str | None = None,
+        docker_volumes: dict[str, str] | None = None,
+        docker_work_dir: str = "/workspace",
+        model: ChatOpenAI | None = None,
+        checkpointer: JsonFileSaver | None = None,
+    ):
+        """
+        `model` and `checkpointer` can be injected so multiple `DeepAgentRunner`
+        instances (e.g. one per conversation thread, each with its own Docker
+        container) share the same underlying model client and checkpoint
+        store instead of each constructing their own. This matters most for
+        `checkpointer`: multiple `JsonFileSaver` instances all pointing at the
+        same `state.json` risk clobbering each other's writes under
+        concurrent access, whereas one shared instance safely multiplexes
+        threads via `thread_id` in `config`, same as the original design.
+        """
         # Default to the folder this file lives in, NOT the process's cwd —
         # otherwise behavior silently depends on where `streamlit run` was
-        # launched from.
+        # launched from. Only meaningful for the local FilesystemBackend;
+        # Docker backends use their own in-container workdir.
         self.root_dir = os.path.abspath(root_dir or os.path.dirname(__file__))
 
         self.crash_controller = CrashController()
-        self.checkpointer = JsonFileSaver(state_path="state.json", memory_path="memory.json")
-        self.model = ChatOpenAI(model=model_name, api_key=os.environ.get("OPENAI_API_KEY"))
+        self.checkpointer = checkpointer or JsonFileSaver(state_path="state.json", memory_path="memory.json")
+        self.model = model or ChatOpenAI(model=model_name, api_key=os.environ.get("OPENAI_API_KEY"))
+
+        if backend is not None and use_docker:
+            raise ValueError("Pass either `backend` or `use_docker=True`, not both.")
+
+        if backend is not None:
+            self.backend = backend
+        elif use_docker:
+            self.backend = PydanticDockerSandboxBackend.create(
+                runtime=docker_runtime,
+                container_name=docker_container_name,
+                volumes=docker_volumes,
+                work_dir=docker_work_dir,
+            )
+        else:
+            self.backend = FilesystemBackend(root_dir=self.root_dir, virtual_mode=True)
 
         crash_controller = self.crash_controller  # local ref for closures
-        resolve = self._resolve_path  # local ref for closures
+        backend_ref = self.backend  # local ref for closures
 
         @tool
         def list_files(directory: str = "/") -> str:
             """List files in a directory."""
             crash_controller.maybe_crash(f"list_files({directory})")
-            return "\n".join(sorted(os.listdir(resolve(directory))))
+            result = backend_ref.ls(directory)
+            if result.error:
+                return f"Error: {result.error}"
+            return "\n".join(sorted(entry["path"] for entry in result.entries))
 
         @tool
         def read_file(path: str) -> str:
             """Read a file's contents."""
             crash_controller.maybe_crash(f"read_file({path})")
-            with open(resolve(path)) as f:
-                return f.read()
+            result = backend_ref.read(path)
+            if result.error:
+                return f"Error: {result.error}"
+            return result.file_data["content"]
 
         @tool
         def count_words(text: str) -> int:
@@ -91,22 +149,16 @@ class DeepAgentRunner:
 
         self.agent = create_deep_agent(
             model=self.model,
-            backend=FilesystemBackend(root_dir=self.root_dir, virtual_mode=True),
+            backend=self.backend,
             tools=[list_files, read_file, count_words],
             checkpointer=self.checkpointer,
         )
 
-    def _resolve_path(self, path: str) -> str:
-        """
-        The FilesystemBackend presents files under a *virtual* root of "/"
-        (that's why `ls` prints things like '/AGENTS.md'). Our own tools
-        talk to the real OS filesystem, so we strip that virtual leading
-        slash and resolve against `root_dir` instead of the OS's real root
-        — otherwise `read_file("/main.py")` looks for main.py on your
-        actual disk root instead of inside the project folder.
-        """
-        relative = path.lstrip("/")
-        return os.path.join(self.root_dir, relative) if relative else self.root_dir
+    def close(self):
+        """Tear down the backend if it needs explicit cleanup (e.g. Docker containers)."""
+        close_fn = getattr(self.backend, "close", None)
+        if callable(close_fn):
+            close_fn()
 
     # ------------------------------------------------------------------ #
     # helpers
