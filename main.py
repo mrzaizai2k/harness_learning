@@ -19,6 +19,13 @@ those are cheap/safe to share and the checkpointer already multiplexes
 threads via `thread_id` in its `config`, same as the original single-runner
 design; only the sandbox needed to be split out.
 
+File Copying
+------------
+When a new Docker container is created for a thread, all files from the
+project directory (respecting .dockerignore) are automatically copied into
+the container's /workspace directory. This ensures each container has access
+to your project files (agents.md, skills/, etc.).
+
 Run with:
     uvicorn main:app --reload --port 8000
 """
@@ -34,7 +41,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 
-from agent_runner import DeepAgentRunner  # <- your uploaded module, save it as deep_agent_runner.py
+from agent_runner import DeepAgentRunner
 from json_saver import JsonFileSaver
 
 app = FastAPI()
@@ -52,24 +59,36 @@ app.add_middleware(
 _shared_model = ChatOpenAI(model="gpt-4.1-mini", api_key=os.environ.get("OPENAI_API_KEY"))
 _shared_checkpointer = JsonFileSaver(state_path="state.json", memory_path="memory.json")
 
+# Project directory to copy files from (defaults to where this file lives)
+_project_root = os.path.abspath(os.path.dirname(__file__))
+
 
 class RunnerPool:
     """Lazily creates one `DeepAgentRunner` (and one Docker container) per
     `thread_id`, so concurrent conversations never write into each other's
-    container filesystem."""
+    container filesystem.
+    
+    Each new container automatically receives a copy of the project files
+    (respecting .dockerignore) so agents have access to agents.md, skills/, etc.
+    """
 
-    def __init__(self):
+    def __init__(self, project_root: str):
         self._runners: dict[str, DeepAgentRunner] = {}
+        self._project_root = project_root
 
     def get_or_create(self, thread_id: str) -> DeepAgentRunner:
         if thread_id not in self._runners:
+            print(f"Creating new Docker sandbox for thread: {thread_id}")
             self._runners[thread_id] = DeepAgentRunner(
                 model=_shared_model,
                 checkpointer=_shared_checkpointer,
+                root_dir=self._project_root,
                 use_docker=True,
                 docker_runtime="python-minimal",
                 docker_container_name=f"deepagents_sandbox_{thread_id}",
+                docker_work_dir="/workspace",
             )
+            print(f"✓ Docker sandbox ready for thread: {thread_id}")
         return self._runners[thread_id]
 
     def get(self, thread_id: str) -> Optional[DeepAgentRunner]:
@@ -79,11 +98,24 @@ class RunnerPool:
         runner = self._runners.pop(thread_id, None)
         if runner is None:
             return False
+        print(f"Closing Docker sandbox for thread: {thread_id}")
         runner.close()
         return True
 
+    def close_all(self) -> None:
+        """Close all running containers (useful for cleanup on shutdown)."""
+        for thread_id in list(self._runners.keys()):
+            self.close(thread_id)
 
-pool = RunnerPool()
+
+pool = RunnerPool(project_root=_project_root)
+
+
+# Cleanup on shutdown
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("Shutting down: closing all Docker containers...")
+    pool.close_all()
 
 
 class RunRequest(BaseModel):
@@ -190,3 +222,24 @@ async def close_thread(thread_id: str):
     if not closed:
         raise HTTPException(status_code=404, detail=f"No runner for thread_id '{thread_id}'")
     return {"closed": True, "thread_id": thread_id}
+
+
+@app.get("/api/threads")
+async def list_threads():
+    """List all active thread IDs with their container status."""
+    threads = []
+    for thread_id, runner in pool._runners.items():
+        threads.append({
+            "thread_id": thread_id,
+            "alive": runner.is_alive(),
+            "paused": runner.is_paused(thread_id),
+        })
+    return {"threads": threads}
+
+
+@app.post("/api/close_all")
+async def close_all_threads():
+    """Close all active Docker containers."""
+    count = len(pool._runners)
+    pool.close_all()
+    return {"closed": count, "message": f"Closed {count} containers"}

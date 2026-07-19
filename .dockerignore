@@ -1,0 +1,4 @@
+.venv/
+.flaky_read_markers/
+frontend/node_modules/
+.env

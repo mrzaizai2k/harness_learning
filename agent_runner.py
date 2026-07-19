@@ -116,6 +116,8 @@ class DeepAgentRunner:
                 container_name=docker_container_name,
                 volumes=docker_volumes,
                 work_dir=docker_work_dir,
+                auto_copy_files=True,  # Enable automatic file copying
+                source_dir=self.root_dir,  # Copy from your project directory
             )
         else:
             self.backend = FilesystemBackend(root_dir=self.root_dir, virtual_mode=True)
