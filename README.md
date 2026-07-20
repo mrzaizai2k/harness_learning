@@ -23,3 +23,15 @@ This project demonstrates the transformative role of AI agents in software devel
 - `agent_runner.py`, `content_writer.py`, `tool_manager.py`: Core modules managing AI agents and content generation.
 
 This project serves as both a research and demonstration platform for leveraging AI agents in software development workflows, aimed at developers and technology leaders interested in AI-driven productivity improvements.
+
+## How to run
+BE:
+```bash
+    uvicorn main:app --reload --port 8000
+```
+
+FE:
+```bash
+    cd frontend
+    npm run dev
+```
