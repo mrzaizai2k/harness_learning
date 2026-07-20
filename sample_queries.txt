@@ -1,3 +1,6 @@
 Create test.py file to try do some simple calculating in python
 
 List the file, then read arbitrary file, then count the number of words in that fiel and write summary about file
+
+ uv run python call_infotainment_agent.py --task "baby song" 
+{"success": true, "message": "Best of 2024 \u2b50\ufe0f | Top Kids Songs from the Super Simple Universe! | Super Simple Songs", "data": {"url": "https://www.youtube.com/watch?v=KGhWfzjcdRM"}}

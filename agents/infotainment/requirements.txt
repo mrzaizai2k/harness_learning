@@ -1,0 +1,6 @@
+a2a-sdk[http-server]==0.3.26
+fastapi
+httpx
+uvicorn[standard]
+openai
+beautifulsoup4

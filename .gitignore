@@ -12,3 +12,5 @@ wheels/
 .flaky_read_markers
 *.json
 frontend/node_modules/
+
+sample_queries.txt

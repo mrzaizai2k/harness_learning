@@ -35,3 +35,16 @@ FE:
     cd frontend
     npm run dev
 ```
+Subagent
+```bash
+
+docker build -t infotainment_agent agents/infotainment
+
+docker run -d \
+  --name infotainment_agent \
+  -p 8004:8004 \
+  --add-host=host.docker.internal:host-gateway \
+  --env-file ./.env \
+  -v "$(pwd)/agents/infotainment:/app" \
+  infotainment_agent
+```
