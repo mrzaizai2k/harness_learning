@@ -34,7 +34,7 @@ def parse_args(argv=None):
         "--endpoint",
         default=os.environ.get(
             "INFOTAINMENT_A2A_URL",
-            "http://localhost:8004",
+            "http://host.docker.internal:8004/",
         ),
         help="A2A endpoint."
     )

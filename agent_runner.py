@@ -138,7 +138,7 @@ class DeepAgentRunner:
 
     def __init__(
         self,
-        model_name: str = "gpt-4.1-mini",
+        model_name: str = "gpt-5.4-mini",
         root_dir: str | None = None,
         backend: SandboxBackendProtocol | None = None,
         use_docker: bool = False,
@@ -215,7 +215,7 @@ class DeepAgentRunner:
             count_words,
             generate_hashtags,
             download_image,
-            web_search,
+            # web_search,
             move_file,
         ]
 

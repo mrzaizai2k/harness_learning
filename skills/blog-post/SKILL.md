@@ -1,127 +1,219 @@
 ---
 name: blog-post
-description: Writes and structures long-form blog posts, creates tutorial outlines, and optimizes content for SEO with cover image generation. Use when the user asks to write a blog post, article, how-to guide, tutorial, technical writeup, thought leadership piece, or long-form content.
+description: >-
+  Research, write, evaluate, and publish long-form blog posts with SEO
+  structure, hero image generation, YouTube recommendations, hashtags,
+  quality evaluation, and optional publishing schedules. Use when the user
+  asks for blog posts, articles, tutorials, technical guides,
+  documentation, thought leadership content, or long-form SEO content.
 ---
-# Blog Post Writing Skill
 
-## Research First (Required)
+# Blog Post Skill
 
-**Before writing any blog post, you MUST delegate research:**
+This skill creates complete long-form blog content from research through final quality evaluation and publishing assets.
 
-1. Use the `task` tool with `subagent_type: "researcher"`
-2. In the description, specify BOTH the topic AND where to save:
+## Workflow
 
-```
+Follow these steps in order.
+
+---
+
+## 1. Research
+
+Always start by delegating research.
+
+```python
 task(
     subagent_type="researcher",
-    description="Research [TOPIC]. Save findings to research/[slug].md"
+    description="Research <topic>. Save findings to research/<slug>.md"
 )
 ```
 
-Example:
+After the researcher finishes:
 
+- Read `research/<slug>.md`
+- Base the article on those findings.
+- Use the collected sources throughout the article.
+
+---
+
+## 2. Create the blog directory
+
+All outputs belong inside:
+
+```text
+blogs/<slug>/
 ```
+
+Required structure:
+
+```text
+blogs/<slug>/
+    post.md
+    hero.png
+```
+
+Optional:
+
+```text
+schedule.json
+```
+
+when publishing is requested.
+
+---
+
+## 3. Write the article
+
+Save the article to:
+
+```text
+blogs/<slug>/post.md
+```
+
+Every article should contain:
+
+1. Hook
+2. Context
+3. 3–5 major sections
+4. Practical application
+5. Conclusion
+6. Recommended Video
+
+Guidelines:
+
+- Write for humans first, SEO second.
+- Base claims on the research findings.
+- Include practical examples.
+- Include code snippets when appropriate.
+- Use headings and bullet lists where useful.
+- Avoid unnecessary repetition.
+- Maintain a clear and engaging writing style.
+
+---
+
+## 4. Generate the hero image
+
+Generate a cover image that represents the article.
+
+Save it as:
+
+```text
+blogs/<slug>/hero.png
+```
+
+Also generate hashtags using the `generate_hashtags` tool for future promotion.
+
+---
+
+## 5. Recommend a YouTube video
+
+Always obtain one relevant YouTube video by running **inside the sandbox**.
+
+```bash
+execute(python call_infotainment_agent.py --task "<blog topic>")
+```
+
+The command returns a video title and URL.
+
+Include both in a **Recommended Video** section near the end of the article.
+
+---
+
+## 6. Schedule publishing (Optional)
+
+Only perform this step if the user explicitly requests scheduling or automatic publishing.
+
+Run **inside the sandbox**:
+
+```bash
+execute(python schedule.py --dir blogs/<slug>)
+```
+
+This generates publishing metadata such as:
+
+```text
+blogs/<slug>/schedule.json
+```
+
+Scheduling should always happen **after**:
+
+1. Research
+2. Article generation
+3. Hero image generation
+
+---
+
+## 7. Evaluate the final output
+
+Always perform a final quality review before considering the task complete.
+
+Delegate to the evaluator.
+
+```python
 task(
-    subagent_type="researcher",
-    description="Research the current state of AI agents in 2025. Save findings to research/ai-agents-2025.md"
+    subagent_type="evaluator",
+    description="Evaluate the blog output in blogs/<slug>. Return a score and improvement suggestions."
 )
 ```
 
-3. After research completes, read the findings file before writing
+The evaluator must inspect the generated output and return:
 
-## Output Structure (Required)
+- Overall score (0–10)
+- PASS if score > 5
+- FAIL if score ≤ 5
+- Reason for the score
+- Detailed checklist
+- Next steps if improvements are required
 
-**Every blog post MUST have both a post AND a cover image:**
+### Automatic Failure Conditions
 
-```
-blogs/
-└── <slug>/
-    ├── post.md        # The blog post content
-    └── hero.png       # REQUIRED: Generated cover image
-```
+The evaluation must FAIL regardless of score if:
 
-Example: A post about "AI Agents in 2025" → `blogs/ai-agents-2025/`
+- `hero.png` is missing.
+- No YouTube URL is present.
+- `post.md` is missing.
 
-**You MUST complete both steps:**
+When the evaluation fails, the evaluator should explain exactly what is missing and recommend concrete next steps, such as:
 
-1. Write the post to `blogs/<slug>/post.md`
-2. Generate a cover image using `generate_image` and save to `blogs/<slug>/hero.png`
+- Generate the hero image.
+- Add a YouTube recommendation.
+- Improve research coverage.
+- Expand incomplete sections.
+- Fix formatting or structure.
+- Regenerate missing files.
 
-**A blog post is NOT complete without its cover image.**
+---
 
-## Blog Post Structure
+## Expected Output
 
-Every blog post should follow this structure:
+Required:
 
-### 1. Hook (Opening)
-
-- Start with a compelling question, statistic, or statement
-- Make the reader want to continue
-- Keep it to 2-3 sentences
-
-### 2. Context (The Problem)
-
-- Explain why this topic matters
-- Describe the problem or opportunity
-- Connect to the reader's experience
-
-### 3. Main Content (The Solution)
-
-- Break into 3-5 main sections with H2 headers
-- Each section covers one key point
-- Include code examples, diagrams, or screenshots where helpful
-- Use bullet points for lists
-
-### 4. Practical Application
-
-- Show how to apply the concepts
-- Include step-by-step instructions if applicable
-- Provide code snippets or templates
-
-### 5. Conclusion & CTA
-
-- Summarize key takeaways (3 bullets max)
-- End with a clear call-to-action
-- Link to related resources
-
-## Image Generation
-
-Every social media post needs an eye-catching image. Use the `download_image` tool to extract related the image, and save it to `<platform>/<slug>/image.png`. For a blog post hero image, save it to `blogs/<slug>/hero.png` and use the `generate_hashtags` tool to generate hashtags for social promotion.
-
-### Example Prompts
-
-**For a technical blog post:**
-
-```
-Isometric 3D illustration of interconnected glowing cubes representing AI agents, each cube has subtle circuit patterns. Cubes connected by luminous data streams. Deep navy background (#0a192f) with electric blue (#64ffda) and soft purple (#c792ea) accents. Clean minimal style, lots of negative space at top for title. Professional tech aesthetic.
+```text
+blogs/<slug>/
+    post.md
+    hero.png
 ```
 
-**For a tutorial/how-to:**
+Optional:
 
-```
-Clean flat illustration of hands typing on a keyboard with abstract code symbols floating upward, transforming into lightbulbs and gears. Warm gradient background from soft coral to light peach. Friendly, approachable style. Centered composition with space for text overlay.
-```
-
-**For thought leadership:**
-
-```
-Abstract visualization of a human silhouette profile merging with geometric neural network patterns. Split composition - organic watercolor texture on left transitioning to clean vector lines on right. Muted sage green and warm terracotta color scheme. Contemplative, forward-thinking mood.
+```text
+blogs/<slug>/
+    schedule.json
 ```
 
-## SEO Considerations
+---
 
-- Include the main keyword in the title and first paragraph
-- Use the keyword naturally 3-5 times throughout
-- Keep the title under 60 characters
-- Write a meta description (150-160 characters)
+## Completion Checklist
 
-## Quality Checklist
+Before finishing, verify:
 
-Before finishing:
-
-- [ ] Post saved to `blogs/<slug>/post.md`
-- [ ] Hero image generated at `blogs/<slug>/hero.png`
-- [ ] Hook grabs attention in first 2 sentences
-- [ ] Each section has a clear purpose
-- [ ] Conclusion summarizes key points
-- [ ] CTA tells reader what to do next
+- ✓ Research completed
+- ✓ `post.md` written
+- ✓ `hero.png` generated
+- ✓ Recommended YouTube video included
+- ✓ Hashtags generated
+- ✓ Scheduling completed (if requested)
+- ✓ Evaluator executed
+- ✓ Evaluation result is PASS
+- ✓ If evaluation failed, required improvements have been identified
