@@ -56,7 +56,7 @@ app.add_middleware(
 # Shared across every thread: cheap to construct, and JsonFileSaver is
 # designed to multiplex many threads over one store. Only the Docker
 # backend is actually duplicated per thread (see RunnerPool below).
-_shared_model = ChatOpenAI(model="gpt-5.4", api_key=os.environ.get("OPENAI_API_KEY"))
+_shared_model = ChatOpenAI(model="gpt-5.4-mini", api_key=os.environ.get("OPENAI_API_KEY"))
 _shared_checkpointer = JsonFileSaver(state_path="state.json", memory_path="memory.json")
 
 # Project directory to copy files from (defaults to where this file lives)

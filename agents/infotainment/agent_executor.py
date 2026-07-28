@@ -146,68 +146,43 @@ class InfotainmentAgentExecutor(AgentExecutor):
 
         return videos[index]
 
-    @override
-    async def execute(
-        self,
-        context: RequestContext,
-        event_queue: EventQueue,
-    ):
+   
+    async def run(self, text: str, metadata: dict | None = None) -> dict:
+        """Core logic, decoupled from the A2A event-queue protocol.
 
-        async def out(success, message, url=""):
-            body = {
-                "success": success,
-                "message": message,
-                "data": {
-                    "url": url,
-                },
-            }
-
-            await event_queue.enqueue_event(
-                new_agent_text_message(json.dumps(body))
-            )
-
-        text = _get_user_text(context).strip()
+        Returns a plain dict: {"success": bool, "message": str, "data": {"url": str}}
+        Reusable by both the A2A `execute()` entrypoint and any other caller
+        (e.g. the Agent Protocol routes).
+        """
+        text = (text or "").strip()
+        metadata = metadata or {}
 
         if not text:
-            await out(False, "Empty request.")
-            return
-
-        metadata = _get_metadata(context)
+            return {"success": False, "message": "Empty request.", "data": {"url": ""}}
 
         client = self._build_client(metadata)
 
         logger.info("Generating search query...")
-
         search_query = self._generate_search_query(client, text)
-
         logger.info("Search query: %s", search_query)
 
         videos = self.youtube.search(search_query)
-
         if not videos:
-            await out(False, "No YouTube videos found.")
-            return
+            return {"success": False, "message": "No YouTube videos found.", "data": {"url": ""}}
 
-        best = self._pick_best_video(
-            client,
-            text,
-            videos,
-        )
-
+        best = self._pick_best_video(client, text, videos)
         if not best:
-            await out(False, "Unable to select a video.")
-            return
+            return {"success": False, "message": "Unable to select a video.", "data": {"url": ""}}
 
-        await out(
-            True,
-            best["title"],
-            url=best["url"],
-        )
+        return {"success": True, "message": best["title"], "data": {"url": best["url"]}}
 
     @override
-    async def cancel(
-        self,
-        context: RequestContext,
-        event_queue: EventQueue,
-    ):
+    async def execute(self, context: RequestContext, event_queue: EventQueue):
+        text = _get_user_text(context)
+        metadata = _get_metadata(context)
+        result = await self.run(text, metadata)
+        await event_queue.enqueue_event(new_agent_text_message(json.dumps(result)))
+
+    @override
+    async def cancel(self, context: RequestContext, event_queue: EventQueue):
         raise NotImplementedError()

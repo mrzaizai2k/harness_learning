@@ -3,13 +3,16 @@ from urllib.parse import urlparse
 
 from agent_card import build_agent_card
 from agent_executor import InfotainmentAgentExecutor
-
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 import uvicorn
+
+from route_infotainment import router as infotainment_router
 
 
 # ==================================================
@@ -35,7 +38,7 @@ agent_card = build_agent_card(BASE_URL)
 
 
 # ==================================================
-# Request handler
+# Initialize A2A handler
 # ==================================================
 
 request_handler = DefaultRequestHandler(
@@ -43,17 +46,38 @@ request_handler = DefaultRequestHandler(
     task_store=InMemoryTaskStore(),
 )
 
-
-# ==================================================
-# Build A2A app
-# ==================================================
-
 app_builder = A2AStarletteApplication(
     agent_card=agent_card,
     http_handler=request_handler,
 )
 
-app = app_builder.build()
+a2a_app = app_builder.build()
+
+
+# ==================================================
+# FastAPI app
+# ==================================================
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ==================================================
+# Routes
+# ==================================================
+
+# Include Agent Protocol routes BEFORE catch-all mount
+app.include_router(infotainment_router)
+
+# Mount A2A app last
+app.mount("/", a2a_app)
 
 
 # ==================================================

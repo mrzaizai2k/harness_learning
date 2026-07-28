@@ -37,12 +37,14 @@ from dotenv import load_dotenv
 from json_saver import JsonFileSaver
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from pydantic_ai_backends import RuntimeConfig
 from docker_sandbox import PydanticDockerSandboxBackend
 from langchain.agents.middleware import TodoListMiddleware
+from deepagents import create_deep_agent, CompiledSubAgent
+# from infotainment_subagent import build_infotainment_graph
+
 from prompts import WRITE_TODOS_TOOL, WRITE_TODOS_SYSTEM_PROMPT
 # Import tools from tool_manager
 from tool_manager import (
@@ -226,6 +228,17 @@ class DeepAgentRunner:
             backend=self.backend,
             tools=tools,
             subagents=load_subagents(Path("./subagents.yaml")),
+            # subagents=load_subagents(Path("./subagents.yaml")) + [
+            #     CompiledSubAgent(
+            #         name="infotainment",
+            #         description=(
+            #             "An agent that finds and recommends a single best-matching YouTube "
+            #             "video for a media/entertainment request (e.g. 'play something relaxing', "
+            #             "'find a video about F1 pit stops'). Returns the video title and URL."
+            #         ),
+            #         runnable=build_infotainment_graph(),
+            #     ),
+            # ],
             checkpointer=self.checkpointer,
             middleware=[TodoListMiddleware(system_prompt=WRITE_TODOS_SYSTEM_PROMPT, tool_description=WRITE_TODOS_TOOL)],
             memory=["./AGENTS.md"],
