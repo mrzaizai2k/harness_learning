@@ -42,7 +42,8 @@ from deepagents.backends import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from pydantic_ai_backends import RuntimeConfig
 from docker_sandbox import PydanticDockerSandboxBackend
-
+from langchain.agents.middleware import TodoListMiddleware
+from prompts import WRITE_TODOS_TOOL, WRITE_TODOS_SYSTEM_PROMPT
 # Import tools from tool_manager
 from tool_manager import (
     web_search,
@@ -52,6 +53,7 @@ from tool_manager import (
 )
 
 load_dotenv()
+
 
 
 def load_subagents(config_path: Path) -> list:
@@ -215,7 +217,7 @@ class DeepAgentRunner:
             count_words,
             generate_hashtags,
             download_image,
-            # web_search,
+            web_search,
             move_file,
         ]
 
@@ -225,6 +227,7 @@ class DeepAgentRunner:
             tools=tools,
             subagents=load_subagents(Path("./subagents.yaml")),
             checkpointer=self.checkpointer,
+            middleware=[TodoListMiddleware(system_prompt=WRITE_TODOS_SYSTEM_PROMPT, tool_description=WRITE_TODOS_TOOL)],
             memory=["./AGENTS.md"],
             skills=["./skills/"],
         )
@@ -241,7 +244,11 @@ class DeepAgentRunner:
 
     @staticmethod
     def _config(thread_id: str) -> dict:
-        return {"configurable": {"thread_id": thread_id}}
+        return {
+            "configurable": {"thread_id": thread_id},
+            "run_name": f"thread-{thread_id}",
+            "tags": [f"thread:{thread_id}"],
+        }
 
     def arm_crash(self):
         """Arm the crash flag: the next tool call will raise an exception."""
