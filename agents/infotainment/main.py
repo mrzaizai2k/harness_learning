@@ -21,7 +21,7 @@ from route_infotainment import router as infotainment_router
 
 BASE_URL = os.environ.get(
     "INFOTAINMENT_BASE_URL",
-    "http://infotainment:8004",
+    "http://localhost:8004",
 )
 
 # Extract port from BASE_URL

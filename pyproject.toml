@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "a2a-sdk<1.0.0",
     "deepagents==0.7.0a7",
     "docker>=7.2.0",
     "fastapi>=0.139.2",

@@ -179,7 +179,10 @@ class InfotainmentAgentExecutor(AgentExecutor):
     @override
     async def execute(self, context: RequestContext, event_queue: EventQueue):
         text = _get_user_text(context)
+        logger.info("text: %s", text)
         metadata = _get_metadata(context)
+        logger.info("metadata: %s", metadata)
+
         result = await self.run(text, metadata)
         await event_queue.enqueue_event(new_agent_text_message(json.dumps(result)))
 
