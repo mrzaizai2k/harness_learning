@@ -51,6 +51,7 @@ from tool_manager import (
     generate_hashtags,
     download_image,
     move_file,
+    generate_todos,
 )
 
 load_dotenv()
@@ -220,6 +221,7 @@ class DeepAgentRunner:
             download_image,
             web_search,
             move_file,
+            generate_todos,
         ]
 
         # Build infotainment subagent

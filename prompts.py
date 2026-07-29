@@ -23,6 +23,7 @@ If the task is too big, break it down into smaller tasks. Do not have task like 
 3. You can also update future tasks, such as deleting them if they are no longer necessary, or adding new tasks that are necessary. 
 Don't change previously completed tasks. or you can add task based on evaluation steps. - This is a must
 4. You can make several updates to the todo list at once. For example, when you complete a task, you can mark the next task you need to start as in_progress.
+5. Keep the to do as is, if it already has to do list from other tools/agents and it still match the requirements of the current task. You can add new tasks to the list if necessary, but do not remove any tasks that are still relevant.
 """
 
 
@@ -40,6 +41,7 @@ Writing todos takes time and tokens, use it when it is helpful for managing comp
 
 - The `write_todos` tool should never be called multiple times in parallel.
 - Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.
+- If already has to do list from other tools, and it still matches the requirements of the current task, keep it as is. 
 - If Evaluator feedback is provided, you should update the todo list based on the feedback. This is a must. If the test or evaluation fail, you must add next steps to fix it
 ## Finishing a task
 

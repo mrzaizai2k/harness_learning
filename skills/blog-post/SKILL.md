@@ -15,10 +15,16 @@ This skill creates complete long-form blog content from research through final q
 ## Workflow
 
 Follow these steps in order.
+---
+
+## 1. Generate a detailed blog post task list
+
+Use the `generate_todos` tool to create a structured task list for the blog post. The todo agent will analyze the requested topic and replace the current todo list with a comprehensive execution plan covering research, writing, SEO, review, and publishing tasks.
+
 
 ---
 
-## 1. Research
+## 2. Research
 
 Always start by delegating research.
 
@@ -36,6 +42,7 @@ After the researcher finishes:
 - Use the collected sources throughout the article.
 
 ---
+
 
 ## 2. Create the blog directory
 
@@ -62,6 +69,7 @@ schedule.json
 when publishing is requested.
 
 ---
+
 
 ## 3. Write the article
 
@@ -211,6 +219,7 @@ Before finishing, verify:
 - ✓ Research completed
 - ✓ `post.md` written
 - ✓ `hero.png` generated
+-Use the `generate_todos` tool to create a structured task list
 - ✓ Recommended YouTube video included
 - ✓ Hashtags generated
 - ✓ Scheduling completed (if requested)

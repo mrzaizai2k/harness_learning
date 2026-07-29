@@ -12,7 +12,10 @@ from typing import Literal
 import requests
 from langchain_core.tools import tool
 from openai import OpenAI
-
+from typing import Annotated, Any
+from langchain_core.tools import InjectedToolCallId
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 @tool
 def list_files(directory: str = "/") -> str:
@@ -34,6 +37,45 @@ def count_words(text: str) -> int:
     # Note: This will be wrapped with crash controller in DeepAgentRunner
     pass
 
+@tool
+def generate_todos(
+    task: str, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> Command[Any]:
+    """Generate a structured todo list for a blog post workflow.
+
+    Delegates to the todo agent to create a comprehensive execution plan
+    covering research, writing, SEO optimization, hero image generation,
+    YouTube recommendation, quality evaluation, and final revisions.
+
+    This replaces the current todo list with the newly generated blog-specific
+    tasks.
+    """
+    # Demo stand-in: normally this would invoke a separate planning subagent.
+    # Hardcoded here just to show the overwrite mechanism.
+    new_todos = [
+        {"content": "Generate a detailed execution plan", "status": "completed"},
+        {"content": "Create a structured task list with call_todoagent", "status": "pending"},
+        {"content": "Research the topic and gather credible sources", "status": "in_progress"},
+        {"content": "Cross-check research findings and finalize key references", "status": "pending"},
+        {"content": "Draft the blog post with an SEO-friendly structure", "status": "pending"},
+        {"content": "Generate SEO metadata, hashtags, and internal/external links", "status": "pending"},
+        {"content": "Generate and save the hero image", "status": "pending"},
+        {"content": "Find a relevant YouTube video and add it to the article", "status": "pending"},
+        {"content": "Evaluate the completed blog with the evaluator agent", "status": "pending"},
+        {"content": "Revise based on feedback, proofread, and finalize the blog", "status": "pending"},
+    ]
+
+    return Command(
+        update={
+            "todos": new_todos,
+            "messages": [
+                ToolMessage(
+                    f"todoagent replaced the todo list with {len(new_todos)} tasks.",
+                    tool_call_id=tool_call_id,
+                )
+            ],
+        }
+    )
 
 @tool
 def download_image(search_result: dict, filename: str = "social_image.png") -> str:
