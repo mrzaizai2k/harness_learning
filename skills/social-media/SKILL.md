@@ -1,27 +1,44 @@
 ---
 name: social-media
 description: >-
-  Research, create, evaluate, and optionally schedule engaging social media
-  content for LinkedIn and Twitter/X. Generates platform-specific posts,
-  companion images, YouTube recommendations, hashtags, quality evaluations,
-  and publishing schedules. Use when the user asks to write a LinkedIn post,
-  tweet, Twitter/X thread, social media caption, social post, or repurpose
-  content for social platforms.
+  Create complete social media content from research to final evaluation.
+  Supports LinkedIn and Twitter/X with task planning, research, platform-
+  specific content generation, companion images, YouTube recommendations,
+  hashtags, optional publishing schedules, and quality evaluation. Use for
+  LinkedIn posts, tweets, Twitter/X threads, social media captions, or other
+  platform-specific social content.
 ---
 
 # Social Media Content Skill
 
-This skill produces complete social media content from research through final quality evaluation.
+This skill produces complete social media content, from planning to final quality evaluation.
 
 ## Workflow
 
-Follow these steps in order.
+Execute the following steps **in order**.
 
 ---
 
-## 1. Research
+## 1. Generate a Social Media Task List
 
-Always start by delegating research.
+Always begin by asking the **todo** subagent to generate a detailed implementation plan.
+
+**Do not call the `write_todos` tool directly.**
+
+```python
+task(
+    subagent_type="todo",
+    description="Generate a detailed task list for creating <platform> content about <topic>."
+)
+```
+
+The generated task list should cover every major stage required to produce the requested social media content.
+
+---
+
+## 2. Research the Topic
+
+Use the **researcher** subagent to gather information.
 
 ```python
 task(
@@ -30,17 +47,20 @@ task(
 )
 ```
 
-After the researcher finishes:
+After the researcher completes:
 
 - Read `research/<slug>.md`.
-- Base the content on those findings.
-- Use the collected facts and sources throughout the post.
+- Base the content on the collected research.
+- Use the gathered facts and sources where appropriate.
+- Avoid unsupported claims.
 
 ---
 
-## 2. Create the output directory
+## 3. Create the Output Directory
 
 ### LinkedIn
+
+Store all outputs under:
 
 ```text
 linkedin/<slug>/
@@ -57,12 +77,15 @@ linkedin/<slug>/
 Optional:
 
 ```text
-schedule.json
+linkedin/<slug>/
+    schedule.json
 ```
 
 ---
 
 ### Twitter / X
+
+Store all outputs under:
 
 ```text
 tweets/<slug>/
@@ -79,16 +102,17 @@ tweets/<slug>/
 Optional:
 
 ```text
-schedule.json
+tweets/<slug>/
+    schedule.json
 ```
 
 ---
 
-## 3. Write the content
+## 4. Write the Content
 
 ### LinkedIn
 
-Save to:
+Save the post to:
 
 ```text
 linkedin/<slug>/post.md
@@ -96,15 +120,15 @@ linkedin/<slug>/post.md
 
 Guidelines:
 
-- Strong first-line hook
-- Professional but conversational
-- Short paragraphs
-- Practical insight
+- Strong opening hook
+- Professional yet conversational tone
+- Short, readable paragraphs
+- Actionable insights
 - Clear call to action
-- 3–5 hashtags
-- Maximum approximately 1,300 characters
+- 3–5 relevant hashtags
+- Approximately 1,300 characters or fewer
 
-Recommended structure:
+Suggested structure:
 
 ```text
 Hook
@@ -122,7 +146,7 @@ Call to action
 
 ### Twitter / X
 
-Save to:
+Save the thread to:
 
 ```text
 tweets/<slug>/thread.md
@@ -131,18 +155,18 @@ tweets/<slug>/thread.md
 Guidelines:
 
 - Strong opening tweet
-- Concise tweets
+- Short and engaging tweets
 - Number tweets when appropriate
-- End with a takeaway or CTA
+- End with a takeaway or call to action
 - Optimize for readability and engagement
 
 ---
 
-## 4. Generate the companion image
+## 5. Generate the Companion Image
 
-Every social media post requires an image.
+Every social media post must include a companion image.
 
-Generate or download an appropriate image and save it as:
+Generate or download a relevant image and save it as:
 
 LinkedIn:
 
@@ -162,29 +186,32 @@ For implementation details, refer to:
 reference/extract-image.md
 ```
 
-A social media post is **not complete** without its image.
+A social media post is **not complete** until its image has been generated.
 
 ---
 
-## 5. Recommend a YouTube video
+## 6. Recommend a YouTube Video
 
-Always obtain one relevant YouTube video by running **inside the sandbox**.
+Always obtain **one relevant YouTube video** by running the infotainment agent **inside the sandbox**.
 
 ```bash
 execute(python call_infotainment_agent.py --task "<topic>")
 ```
 
-The command returns a video title and URL.
+The command returns:
 
-Include both in the generated content under a short **Recommended Video** section.
+- Video title
+- Video URL
+
+Include both in a **Recommended Video** section within the generated content.
 
 ---
 
-## 6. Schedule publishing (Optional)
+## 7. Schedule Publishing (Optional)
 
-Only execute this step if the user explicitly requests scheduling or automatic publishing.
+Only perform this step if the user explicitly requests scheduling or automatic publishing.
 
-Run **inside the sandbox**.
+Run the scheduler **inside the sandbox**.
 
 For LinkedIn:
 
@@ -198,78 +225,80 @@ For Twitter/X:
 execute(python schedule.py --dir tweets/<slug>)
 ```
 
-This generates scheduling metadata such as:
+This generates:
 
 ```text
 schedule.json
 ```
 
-Scheduling should always happen **after**:
+Scheduling must occur **after**:
 
 1. Research
 2. Content generation
-3. Image generation
+3. Companion image generation
 4. YouTube recommendation
 
 ---
 
-## 7. Evaluate the final output
+## 8. Evaluate the Content
 
 Always perform a final quality review before considering the task complete.
 
-Delegate to the evaluator.
+Delegate evaluation to the **evaluator** subagent.
 
 ```python
 task(
     subagent_type="evaluator",
-    description="Evaluate the social media output in <platform>/<slug>. Return a score and improvement suggestions."
+    description="Evaluate the generated social media content in <platform>/<slug>. Return a score and improvement suggestions."
 )
 ```
 
-The evaluator must inspect the generated output and return:
+The evaluator should report:
 
 - Overall score (0–10)
 - PASS if score > 5
 - FAIL if score ≤ 5
-- Reason for the score
-- Detailed checklist
-- Next steps if improvements are required
+- Reasoning
+- Checklist of evaluated criteria
+- Improvement suggestions (if needed)
 
-### Evaluation Requirements
+### Evaluation Criteria
 
-The evaluator should verify:
+Verify that:
 
 - The post or thread exists.
-- The content is engaging and appropriate for the platform.
-- Research findings are reflected in the content.
-- An accompanying image exists.
-- A valid YouTube URL is included.
+- The content matches the requested platform.
+- The content reflects the research findings.
+- The companion image exists.
+- A valid YouTube recommendation is included.
 - Hashtags are included where appropriate.
-- The content is well formatted.
+- The formatting is clear and engaging.
 
-### Automatic Failure Conditions
+### Mandatory Failure Conditions
 
-The evaluation must FAIL regardless of score if:
+The evaluation **must FAIL**, regardless of score, if any required output is missing:
 
-- `image.png` is missing.
-- No YouTube URL is present.
-- The post (`post.md`) or thread (`thread.md`) is missing.
+- `post.md` (LinkedIn) or `thread.md` (Twitter/X)
+- `image.png`
+- A YouTube recommendation (title and URL)
 
-When the evaluation fails, the evaluator should explain exactly what is missing and recommend concrete next steps, such as:
+If evaluation fails, the report should clearly explain what is missing and recommend concrete actions, such as:
 
 - Generate the companion image.
 - Add a YouTube recommendation.
-- Improve the hook.
+- Improve the opening hook.
 - Improve platform-specific formatting.
 - Strengthen the call to action.
-- Expand or rewrite weak sections.
+- Rewrite weak content.
 - Regenerate missing files.
 
 ---
 
-## Expected Output
+## Expected Outputs
 
 ### LinkedIn
+
+Required:
 
 ```text
 linkedin/<slug>/
@@ -288,6 +317,8 @@ linkedin/<slug>/
 
 ### Twitter / X
 
+Required:
+
 ```text
 tweets/<slug>/
     thread.md
@@ -305,14 +336,14 @@ tweets/<slug>/
 
 ## Completion Checklist
 
-Before finishing, verify:
+Before completing the task, verify that:
 
+- ✓ Todo list generated
 - ✓ Research completed
-- ✓ Content written and saved
+- ✓ Content created and saved
 - ✓ Companion image generated
-- ✓ Recommended YouTube video included
+- ✓ YouTube recommendation included
 - ✓ Hashtags included where appropriate
-- ✓ Scheduling completed (if requested)
-- ✓ Evaluator executed
-- ✓ Evaluation result is PASS
-- ✓ If evaluation failed, required improvements have been identified
+- ✓ Publishing schedule created (if requested)
+- ✓ Evaluation completed
+- ✓ Final evaluation result is PASS

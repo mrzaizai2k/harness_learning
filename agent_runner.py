@@ -43,6 +43,7 @@ from docker_sandbox import PydanticDockerSandboxBackend
 from langchain.agents.middleware import TodoListMiddleware
 from deepagents import create_deep_agent, CompiledSubAgent
 from infotainment_subagent import build_infotainment_graph
+from todo_subagent import build_todo_graph
 
 from prompts import WRITE_TODOS_TOOL, WRITE_TODOS_SYSTEM_PROMPT
 # Import tools from tool_manager
@@ -51,7 +52,6 @@ from tool_manager import (
     generate_hashtags,
     download_image,
     move_file,
-    generate_todos,
 )
 
 load_dotenv()
@@ -221,7 +221,6 @@ class DeepAgentRunner:
             download_image,
             web_search,
             move_file,
-            generate_todos,
         ]
 
         # Build infotainment subagent
@@ -235,11 +234,24 @@ class DeepAgentRunner:
             runnable=build_infotainment_graph(),
         )
 
+        todo_subagent = CompiledSubAgent(
+            name="todo",
+            description=(
+                "An agent that generates a structured, ordered todo list for writing a "
+                "blog post. It breaks a blog topic into actionable tasks such as "
+                "researching the topic, gathering credible sources, creating an outline, "
+                "drafting sections, fact-checking, adding images and videos, optimizing "
+                "for SEO, proofreading, and preparing the post for publication."
+            ),
+            runnable=build_todo_graph(),
+        )
+        
+
         self.agent = create_deep_agent(
             model=self.model,
             backend=self.backend,
             tools=tools,
-            subagents=load_subagents(Path("./subagents.yaml")) + [infotainment_subagent],
+            subagents=load_subagents(Path("./subagents.yaml")) + [infotainment_subagent, todo_subagent],
             checkpointer=self.checkpointer,
             middleware=[TodoListMiddleware(system_prompt=WRITE_TODOS_SYSTEM_PROMPT, tool_description=WRITE_TODOS_TOOL)],
             memory=["./AGENTS.md"],
