@@ -27,7 +27,7 @@ PLAY_INFOTAINMENT = AgentSkill(
 
 def build_agent_card(base_url: str) -> AgentCard:
     return AgentCard(
-        name="Infotainment Agent",
+        name="Infotainment",
         description=build_orchestrator_description(),
         url=base_url.rstrip("/") + "/",
         version="1.0.0",

@@ -31,7 +31,7 @@ GENERATE_BLOG_TODOS = AgentSkill(
 
 def build_agent_card(base_url: str) -> AgentCard:
     return AgentCard(
-        name="Blog Post Todo Agent",
+        name="Todo",
         description=build_orchestrator_description(),
         url=base_url.rstrip("/") + "/",
         version="1.0.0",
