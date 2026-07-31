@@ -6,3 +6,5 @@ List the file, then read arbitrary file, then count the number of words in that 
 {"success": true, "message": "Best of 2024 \u2b50\ufe0f | Top Kids Songs from the Super Simple Universe! | Super Simple Songs", "data": {"url": "https://www.youtube.com/watch?v=KGhWfzjcdRM"}}
 
 Write a blog post about how AI agents are transforming software development
+
+Use codeanalyzer subagent to deep research on code_base_c_test folder code

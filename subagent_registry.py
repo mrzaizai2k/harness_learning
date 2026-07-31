@@ -13,8 +13,9 @@ from langchain_core.messages import AIMessage
 
 from a2a.client import A2ACardResolver, A2AClient
 from a2a.types import MessageSendParams, SendMessageRequest
+from langchain_core.runnables import RunnableConfig
 
-logger = logging.getLogger("orchestrator.subagent_registry")
+logger = logging.getLogger("subagent_registry")
 
 
 # ==================================================
@@ -74,8 +75,9 @@ def make_a2a_graph(base_url: str, timeout: float = 300.0):
     can be built for *any* agent discovered via the registry.
     """
 
-    async def _call_agent_async(state: A2AAgentState) -> dict:
+    async def _call_agent_async(state: A2AAgentState, config: RunnableConfig | None = None) -> dict:
         text = _last_human_text(state["messages"])
+        thread_id = (config or {}).get("configurable", {}).get("thread_id")
 
         async with httpx.AsyncClient(timeout=timeout) as httpx_client:
             try:
@@ -97,9 +99,12 @@ def make_a2a_graph(base_url: str, timeout: float = 300.0):
                             "role": "user",
                             "parts": [{"type": "text", "text": text}],
                             "messageId": uuid.uuid4().hex,
+                            "metadata": {"thread_id": thread_id},
                         }
                     ),
                 )
+
+                print("thread_id", thread_id) 
 
                 response = await client.send_message(req)
                 response_text = _extract_text_from_response(response)
@@ -111,8 +116,8 @@ def make_a2a_graph(base_url: str, timeout: float = 300.0):
 
         return {"messages": [AIMessage(content=response_text or "(no response)")]}
 
-    def _call_agent(state: A2AAgentState) -> dict:
-        return asyncio.run(_call_agent_async(state))
+    def _call_agent(state: A2AAgentState, config: RunnableConfig | None = None) -> dict:
+        return asyncio.run(_call_agent_async(state, config))
 
     graph = StateGraph(A2AAgentState)
     graph.add_node("call_agent", _call_agent)

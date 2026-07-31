@@ -32,7 +32,6 @@ import os
 import uuid
 import yaml
 from pathlib import Path
-from dotenv import load_dotenv
 from json_saver import JsonFileSaver
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -45,13 +44,14 @@ from deepagents import create_deep_agent
 from subagent_registry import SubAgentRegistry
 
 from prompts import WRITE_TODOS_TOOL, WRITE_TODOS_SYSTEM_PROMPT
-# Import tools from tool_manager
 from tool_manager import (
     web_search,
     generate_hashtags,
     download_image,
     move_file,
 )
+
+from dotenv import load_dotenv
 
 load_dotenv()
 

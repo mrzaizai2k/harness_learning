@@ -1,0 +1,9 @@
+a2a-sdk[http-server]==0.3.26
+fastapi
+httpx
+uvicorn[standard]
+deepagents
+langchain-openai
+graphifyy
+pydantic-ai-backend[docker]
+docker
