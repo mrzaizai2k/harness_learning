@@ -1,26 +1,13 @@
 import shlex
 
 from langchain_core.tools import tool
+from rapidfuzz import process, fuzz
 
 from docker_sandbox import PydanticDockerSandboxBackend
 
 
 def make_graphify_tools(backend: PydanticDockerSandboxBackend, query_timeout: int, build_timeout: int) -> list:
     """Build the sandbox-native graphify toolset, bound to `backend`."""
-
-    @tool
-    def find_source_root(hint: str = "") -> str:
-        """List files/directories in the sandbox workspace to locate the
-        source code project (and to check whether graphify-out/ already
-        exists). Optionally pass a `hint` substring (e.g. "src",
-        "package.json", "graphify-out") to filter results."""
-        result = backend.ls("/")
-        if result.error:
-            return f"Error: {result.error}"
-        entries = sorted(entry["path"] for entry in result.entries)
-        if hint:
-            entries = [e for e in entries if hint.lower() in e.lower()]
-        return "\n".join(entries) if entries else "(no matching entries found)"
 
     @tool
     def graphify_ensure_installed() -> str:
@@ -61,39 +48,72 @@ def make_graphify_tools(backend: PydanticDockerSandboxBackend, query_timeout: in
             return f"graphify build failed: {result.output}"
         return result.output or "graphify build completed."
 
+    def _graph_json_exists(code_path: str) -> bool:
+        check = backend.execute(
+            f"test -f {shlex.quote(code_path.rstrip('/') + '/graphify-out/graph.json')}"
+        )
+        return check.exit_code == 0
+
+    def _missing_graph_msg(cmd_name: str, code_path: str) -> str:
+        return (
+            f"graphify {cmd_name} failed: no graph.json found under "
+            f"{code_path.rstrip('/')}/graphify-out/. Run graphify_build with "
+            f"path={code_path!r} first, or pass the correct code_path."
+        )
+
     @tool
-    def graphify_query(question: str) -> str:
+    def graphify_query(question: str, code_path: str = ".") -> str:
         """Ask graphify a plain-English question about the codebase's
         structure and relationships, e.g. 'what connects auth to the
         database?'. Returns explicit paths with real file:line citations,
-        each relation tagged EXTRACTED, INFERRED, or AMBIGUOUS."""
-        result = backend.execute(f"graphify query {shlex.quote(question)}", timeout=query_timeout)
+        each relation tagged EXTRACTED, INFERRED, or AMBIGUOUS.
+
+        `code_path` MUST be the same path that was passed to
+        `graphify_build` (e.g. "/workspace/code_base_c_test"), since that is
+        where graphify-out/graph.json was written. Do not omit it — graphify
+        reads graphify-out/graph.json relative to the current directory, so
+        this tool `cd`s into code_path before running the command."""
+        if not _graph_json_exists(code_path):
+            return _missing_graph_msg("query", code_path)
+        cmd = f"cd {shlex.quote(code_path)} && graphify query {shlex.quote(question)}"
+        result = backend.execute(cmd, timeout=query_timeout)
         if result.exit_code != 0:
             return f"graphify query failed: {result.output}"
         return result.output
 
     @tool
-    def graphify_path(source: str, target: str) -> str:
+    def graphify_path(source: str, target: str, code_path: str = ".") -> str:
         """Find the shortest path between two named entities in the code
-        graph (e.g. two classes or services)."""
-        result = backend.execute(
-            f"graphify path {shlex.quote(source)} {shlex.quote(target)}", timeout=query_timeout
-        )
+        graph (e.g. two classes or services).
+
+        `code_path` MUST match the path passed to `graphify_build` (e.g.
+        "/workspace/code_base_c_test"), since that is where the graph was
+        written. This tool `cd`s into code_path before running the command."""
+        if not _graph_json_exists(code_path):
+            return _missing_graph_msg("path", code_path)
+        cmd = f"cd {shlex.quote(code_path)} && graphify path {shlex.quote(source)} {shlex.quote(target)}"
+        result = backend.execute(cmd, timeout=query_timeout)
         if result.exit_code != 0:
             return f"graphify path failed: {result.output}"
         return result.output
 
     @tool
-    def graphify_explain(entity: str) -> str:
+    def graphify_explain(entity: str, code_path: str = ".") -> str:
         """Explain a single entity (class/function/module/service): what it
-        is, where it's defined, what calls it, and what it calls."""
-        result = backend.execute(f"graphify explain {shlex.quote(entity)}", timeout=query_timeout)
+        is, where it's defined, what calls it, and what it calls.
+
+        `code_path` MUST match the path passed to `graphify_build` (e.g.
+        "/workspace/code_base_c_test"), since that is where the graph was
+        written. This tool `cd`s into code_path before running the command."""
+        if not _graph_json_exists(code_path):
+            return _missing_graph_msg("explain", code_path)
+        cmd = f"cd {shlex.quote(code_path)} && graphify explain {shlex.quote(entity)}"
+        result = backend.execute(cmd, timeout=query_timeout)
         if result.exit_code != 0:
             return f"graphify explain failed: {result.output}"
         return result.output
 
     return [
-        find_source_root,
         graphify_ensure_installed,
         graphify_build,
         graphify_query,

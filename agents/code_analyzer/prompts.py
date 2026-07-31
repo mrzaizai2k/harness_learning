@@ -48,37 +48,34 @@ Return empty arrays when a category has no verified result. Never wrap the JSON 
 code fence and never add text outside the JSON object."""
 
 GRAPHIFY_WORKFLOW_INSTRUCTIONS = """
-You are working inside a live sandbox that already contains the user's
-project files — you do NOT have this code locally, so never guess at paths
-or contents. Follow this workflow:
+You are working inside a live sandbox with the user's project files — you
+do NOT have this code locally, so never guess at paths or contents.
 
-1. Call `find_source_root` (optionally with a hint like "src", "package.json",
-   "requirements.txt", etc.) to locate the actual codebase root inside the
-   sandbox. A project root is a directory containing source files and/or a
-   manifest (package.json, pyproject.toml, go.mod, Cargo.toml, ...).
-2. Call `graphify_ensure_installed` once to confirm the `graphify` CLI is
-   available (it installs it via pip if missing).
-3. Check whether `graphify-out/graph.json` already exists at the project
-   root (use `find_source_root` with hint="graphify-out"). If it does not
-   exist, call `graphify_build` on that root to produce it. If the user asks
-   about very recent changes, call `graphify_build` again with `update=True`
-   instead of rebuilding from scratch. Use `mode="deep"` only if the
-   question needs multi-pass analysis (e.g. deep architectural questions).
-4. Answer the user's question using `graphify_query` for open-ended
-   "how does X relate to Y" questions, `graphify_path` when two specific
-   named entities are given, and `graphify_explain` when asked about a
-   single entity (class/function/module/service).
-5. Respond with ONLY a JSON object (no prose outside it) matching this
-   contract:
+1. Determine CODE_PATH: the project root, inferred from the user's request
+   or found by inspecting the sandbox (e.g. list /workspace). Reuse this
+   exact string for every graphify call below — a mismatch between the
+   path used to build and the path used to query causes "graph file not
+   found", since the graph only ever lives at
+   "<CODE_PATH>/graphify-out/graph.json".
+2. Call `graphify_ensure_installed` once.
+3. If "<CODE_PATH>/graphify-out/graph.json" doesn't already exist, call
+   `graphify_build(path=CODE_PATH)`. For very recent changes, call it again
+   with `update=True` instead of rebuilding from scratch. Use
+   `mode="deep"` only for deep architectural questions.
+4. Answer the question with `graphify_query` (open-ended relations),
+   `graphify_path` (two named entities), or `graphify_explain` (single
+   entity) — always passing `code_path=CODE_PATH`. On a "graph file not
+   found" error, rebuild with `path=CODE_PATH` and retry once.
+5. Respond with ONLY this JSON object, no other prose:
    {
      "answer": "<plain-English answer, citing file:line locations>",
      "nodes": [{"id": "...", "type": "...", "file": "...", "line": ...}],
      "edges": [{"from": "...", "to": "...", "relation": "...", "tag": "EXTRACTED|INFERRED|AMBIGUOUS"}],
      "evidence": [{"file": "...", "line": ..., "note": "..."}]
    }
-   Populate nodes/edges/evidence ONLY from what the graphify tools actually
-   returned — never fabricate a relation or citation. If a tool returned
-   nothing useful, say so honestly in "answer" and leave the arrays empty.
+   Populate nodes/edges/evidence ONLY from what the tools actually
+   returned — never fabricate a relation or citation. If nothing useful
+   came back, say so in "answer" and leave the arrays empty.
 """
 
 def build_orchestrator_description() -> str:
