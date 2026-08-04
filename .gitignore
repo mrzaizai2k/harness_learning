@@ -16,3 +16,4 @@ frontend/node_modules/
 sample_queries.txt
 output/
 code_base_c_test/
+*.tmp

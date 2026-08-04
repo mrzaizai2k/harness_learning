@@ -21,4 +21,4 @@ Before writing on any topic:
 5. Run the  youtube-video skill in `skills/blog-post/reference/youtube-video.md` to find one relevant YouTube video and include its **title** and **URL** as a recommended resource in the content
 6. Use the `generate_hashtags` tool to generate hashtags for the post
 7. Use the `download_image` tool to extract one relevant image from web search for the social image
-8. Use evaluator to evaluate the result, update the to do using write_todos tool if the task is FAIL. Do notr stop if the task not PASS. This is a must
+8. Use evaluator to evaluate the result, update the to do using write_todos tool if the task is FAIL. Do not stop if the task not PASS. This is a must

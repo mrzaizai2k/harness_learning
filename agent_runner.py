@@ -43,6 +43,10 @@ from langchain.agents.middleware import TodoListMiddleware
 from deepagents import create_deep_agent
 from subagent_registry import SubAgentRegistry
 
+from langfuse import get_client
+from langfuse.langchain import CallbackHandler
+
+
 from prompts import WRITE_TODOS_TOOL, WRITE_TODOS_SYSTEM_PROMPT
 from tool_manager import (
     web_search,
@@ -187,6 +191,9 @@ class DeepAgentRunner:
 
         crash_controller = self.crash_controller
         backend_ref = self.backend
+        self.langfuse = get_client()
+        self.langfuse_handler = CallbackHandler()
+
 
         @tool
         def list_files(directory: str = "/") -> str:
@@ -245,12 +252,15 @@ class DeepAgentRunner:
     def new_thread_id() -> str:
         return uuid.uuid4().hex[:8]
 
-    @staticmethod
-    def _config(thread_id: str) -> dict:
+    def _config(self, thread_id: str) -> dict:
         return {
             "configurable": {"thread_id": thread_id},
             "run_name": f"thread-{thread_id}",
             "tags": [f"thread:{thread_id}"],
+            "callbacks": [self.langfuse_handler],
+            "metadata": {
+                "langfuse_session_id": thread_id,  # groups all runs of a thread into one Langfuse session
+            },
         }
 
     def arm_crash(self):
@@ -259,7 +269,7 @@ class DeepAgentRunner:
 
     def stream_run(self, task: str, thread_id: str):
         """Start a brand-new task on `thread_id`, yielding events as they happen."""
-        config = self._config(thread_id)
+        config = self._config(thread_id =thread_id)
         try:
             for event in self.agent.stream(
                 {"messages": [{"role": "user", "content": task}]},
