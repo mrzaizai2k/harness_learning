@@ -3,7 +3,7 @@ import Composer from "./components/Composer.jsx";
 import Conversation from "./components/Conversation.jsx";
 import CrashBanner from "./components/CrashBanner.jsx";
 import Icon from "./components/Icon.jsx";
-import RunPanel from "./components/RunPanel.jsx";
+import RunPanel, { RunShortcuts } from "./components/RunPanel.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import { useAgentStream } from "./hooks/useAgentStream.js";
 import { readHashThread, setHashThread, useHashThread, useThreads } from "./hooks/useThreads.js";
@@ -51,7 +51,28 @@ export default function App() {
   const { isDark, toggle } = useTheme();
 
   const [panelTab, setPanelTab] = useState("plan");
-  const [panelOpen, setPanelOpen] = useState(() => window.innerWidth >= 1024);
+  const isWide = () => window.innerWidth >= 1024;
+  // Remember the panel on wide screens; on narrow ones it is a drawer and starts closed.
+  const [panelOpen, setPanelOpen] = useState(() => {
+    if (!isWide()) return false;
+    try {
+      return localStorage.getItem("panelOpen") !== "false";
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    if (!isWide()) return;
+    try {
+      localStorage.setItem("panelOpen", String(panelOpen));
+    } catch {
+      /* storage blocked */
+    }
+  }, [panelOpen]);
+  const openPanel = (tab) => {
+    setPanelTab(tab);
+    setPanelOpen(true);
+  };
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const onThreadChange = useCallback(
@@ -156,6 +177,7 @@ export default function App() {
             {state.threadId && <code className="thread-id">{state.threadId}</code>}
           </div>
           <div className="topbar-actions">
+            {!panelOpen && <RunShortcuts state={state} onOpen={openPanel} />}
             {statusLabel && (
               <span className={`status-pill status-${state.status}`} aria-live="polite">
                 {busy && <span className="spinner sm" />}

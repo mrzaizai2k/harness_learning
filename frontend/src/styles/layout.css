@@ -15,6 +15,7 @@
 .sidebar {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
@@ -22,6 +23,8 @@
 .sidebar-top {
   padding: 14px 14px 10px;
   display: grid;
+  /* minmax(0, 1fr): never let a child's intrinsic width widen the column */
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 .brand {
@@ -61,6 +64,7 @@
 }
 .search input {
   flex: 1;
+  width: 100%;
   min-width: 0;
   border: 0;
   outline: 0;
@@ -154,12 +158,14 @@
   backdrop-filter: blur(8px);
 }
 .topbar-title {
+  flex: 1;
   min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 10px;
 }
 .topbar-title h2 {
+  min-width: 0;
   margin: 0;
   font-size: 15px;
   font-weight: 600;
@@ -172,6 +178,7 @@
   color: var(--text-faint);
 }
 .topbar-actions {
+  flex-shrink: 0;
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -272,18 +279,49 @@
   background: var(--bg-raised);
   color: var(--text);
 }
-.panel-tab .count {
+.panel-tab .count,
+.run-shortcut .count {
   font-size: 11px;
   padding: 0 6px;
   border-radius: var(--radius-pill);
   background: var(--bg-hover);
   color: var(--text-muted);
 }
-.panel-tab .count.tone-success {
+.panel-tab .count.tone-success,
+.run-shortcut .count.tone-success {
   color: var(--success);
 }
-.panel-tab .count.tone-danger {
+.panel-tab .count.tone-danger,
+.run-shortcut .count.tone-danger {
   color: var(--danger);
+}
+
+/* Top-bar shortcuts to the run panel tabs (shown while the panel is closed) */
+.run-shortcuts {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.run-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+.run-shortcut:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 .panel-close {
   margin-left: auto;
@@ -299,7 +337,19 @@
 }
 
 /* ---- responsive ---- */
+@media (max-width: 1199px) {
+  .thread-id {
+    display: none;
+  }
+}
+
 @media (max-width: 1023px) {
+  .run-shortcut-label {
+    display: none;
+  }
+  .run-shortcut {
+    padding: 0 7px;
+  }
   .app,
   .app.panel-open {
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
@@ -353,8 +403,12 @@
   .topbar {
     padding: 0 10px;
   }
-  .thread-id {
+  .thread-id,
+  .run-shortcut-label {
     display: none;
+  }
+  .run-shortcut {
+    padding: 0 7px;
   }
   .conv-inner {
     padding: 18px 16px;

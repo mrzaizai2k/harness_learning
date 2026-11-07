@@ -255,25 +255,50 @@ function PanelEmpty({ icon, title, text }) {
   );
 }
 
-const TABS = [
-  ["plan", "Plan"],
-  ["output", "Output"],
-  ["evaluation", "Evaluation"],
+export const TABS = [
+  ["plan", "Plan", "list"],
+  ["output", "Output", "file"],
+  ["evaluation", "Evaluation", "star"],
 ];
 
-export default function RunPanel({ state, tab, onTab, onClose }) {
-  const counts = {
+/** Small badge text per tab: todo progress, file count, last verdict. */
+export function panelCounts(state) {
+  return {
     plan: state.todos.length ? `${state.todos.filter((t) => t.status === "completed").length}/${state.todos.length}` : null,
     output: state.files.length || null,
     evaluation: state.evaluations.length ? state.evaluations[state.evaluations.length - 1].result || "?" : null,
   };
+}
+
+export function countTone(value) {
+  return value === "PASS" ? "tone-success" : value === "FAIL" ? "tone-danger" : "";
+}
+
+/** Top-bar shortcuts shown while the panel is closed, so the tabs are never out of reach. */
+export function RunShortcuts({ state, onOpen }) {
+  const counts = panelCounts(state);
+  return (
+    <div className="run-shortcuts" role="group" aria-label="Run details">
+      {TABS.map(([id, label, icon]) => (
+        <button key={id} className="run-shortcut" onClick={() => onOpen(id)} title={`Open ${label}`}>
+          <Icon name={icon} size={14} />
+          <span className="run-shortcut-label">{label}</span>
+          {counts[id] != null && <span className={`count ${countTone(counts[id])}`}>{counts[id]}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export default function RunPanel({ state, tab, onTab, onClose }) {
+  const counts = panelCounts(state);
   return (
     <aside className="run-panel" aria-label="Run details">
       <div className="panel-tabs" role="tablist">
         {TABS.map(([id, label]) => (
           <button key={id} role="tab" aria-selected={tab === id} className={`panel-tab ${tab === id ? "is-active" : ""}`} onClick={() => onTab(id)}>
             {label}
-            {counts[id] != null && <span className={`count ${counts[id] === "PASS" ? "tone-success" : counts[id] === "FAIL" ? "tone-danger" : ""}`}>{counts[id]}</span>}
+            {counts[id] != null && <span className={`count ${countTone(counts[id])}`}>{counts[id]}</span>}
           </button>
         ))}
         <button className="btn btn-icon btn-ghost panel-close" onClick={onClose} title="Close panel">
