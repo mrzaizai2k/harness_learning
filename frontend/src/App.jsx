@@ -1,221 +1,200 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Composer from "./components/Composer.jsx";
+import Conversation from "./components/Conversation.jsx";
+import CrashBanner from "./components/CrashBanner.jsx";
+import Icon from "./components/Icon.jsx";
+import RunPanel from "./components/RunPanel.jsx";
+import Sidebar from "./components/Sidebar.jsx";
+import { useAgentStream } from "./hooks/useAgentStream.js";
+import { readHashThread, setHashThread, useHashThread, useThreads } from "./hooks/useThreads.js";
 
-const API_BASE = "http://localhost:8000";
+const DEBUG = new URLSearchParams(window.location.search).has("debug");
 
-// Small icon set, kept as inline glyphs so no icon library is needed.
-const ICONS = {
-  user: "\u{1F464}", // 👤
-  ai: "\u{1F916}", // 🤖
-  tool: "\u2699", // ⚙
-  crash: "\u26A0", // ⚠
-  resume: "\u21BB", // ↻
-  info: "\u2139", // ℹ
+const STATUS_LABEL = {
+  idle: null,
+  loading: "Loading",
+  running: "Running",
+  stopping: "Stopping",
+  paused: "Interrupted",
+  disconnected: "Disconnected",
+  stopped: "Stopped",
+  done: "Done",
 };
 
-function roleLabel(role) {
-  if (role === "human") return "You";
-  if (role === "ai") return "Assistant";
-  if (role === "tool") return "Tool result";
-  return "System";
-}
-
-function roleIcon(role) {
-  if (role === "human") return ICONS.user;
-  if (role === "ai") return ICONS.ai;
-  if (role === "tool") return ICONS.tool;
-  return ICONS.info;
-}
-
-function ThinkingIndicator() {
-  return (
-    <div className="message message-thinking">
-      <div className="message-icon">{ICONS.ai}</div>
-      <div className="message-body">
-        <div className="message-role">Assistant</div>
-        <div className="thinking-dots">
-          <span></span>
-          <span></span>
-          <span></span>
-        </div>
-      </div>
-    </div>
-  );
+function useTheme() {
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("theme") || "system";
+    } catch {
+      return "system";
+    }
+  });
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("theme", theme);
+    } catch {
+      /* storage blocked */
+    }
+  }, [theme]);
+  const isDark =
+    theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  return { isDark, toggle: () => setTheme(isDark ? "light" : "dark") };
 }
 
 export default function App() {
-  const [messages, setMessages] = useState([]); // {kind, role, content, tools}
-  const [input, setInput] = useState("");
-  const [threadId, setThreadId] = useState(null);
-  const [isRunning, setIsRunning] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const scrollRef = useRef(null);
+  const { threads, loading, error, refresh } = useThreads();
+  const composerRef = useRef(null);
+  const searchRef = useRef(null);
+  const { isDark, toggle } = useTheme();
 
+  const [panelTab, setPanelTab] = useState("plan");
+  const [panelOpen, setPanelOpen] = useState(() => window.innerWidth >= 1024);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const onThreadChange = useCallback(
+    (id) => {
+      setHashThread(id);
+      refresh(); // show the new thread in the sidebar right away
+    },
+    [refresh]
+  );
+  const { state, run, resume, stop, armCrash, load, reset } = useAgentStream({
+    onThreadChange,
+    onRunFinished: refresh,
+  });
+
+  // Open the thread named in the URL on first load and on back/forward.
+  const openFromHash = useCallback(
+    (id) => {
+      if (id && id !== state.threadId) load(id);
+      if (!id && state.threadId) reset();
+    },
+    [load, reset, state.threadId]
+  );
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, isRunning]);
+    const id = readHashThread();
+    if (id) load(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useHashThread(openFromHash);
 
-  const appendMessage = (kind, role, content) => {
-    setMessages((prev) => [...prev, { kind, role, content }]);
-  };
+  // Show the first produced file / evaluation as soon as it appears.
+  const prevFiles = useRef(0);
+  const prevEvals = useRef(0);
+  useEffect(() => {
+    const live = state.status === "running";
+    if (live && state.files.length > prevFiles.current && prevFiles.current === 0) setPanelTab("output");
+    if (live && state.evaluations.length > prevEvals.current) setPanelTab("evaluation");
+    prevFiles.current = state.files.length;
+    prevEvals.current = state.evaluations.length;
+  }, [state.files.length, state.evaluations.length, state.status]);
 
-  const appendNotice = (content, variant = "info") => {
-    setMessages((prev) => [...prev, { kind: "notice", variant, content }]);
-  };
+  const busy = state.status === "running" || state.status === "stopping";
 
-  const appendToolCall = (tools) => {
-    setMessages((prev) => [...prev, { kind: "tool-call", tools }]);
-  };
-
-  // Reads an SSE response body and calls onEvent for each parsed JSON event.
-  const consumeStream = async (response, onEvent) => {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop(); // last chunk may be incomplete, keep it in buffer
-
-      for (const part of parts) {
-        const line = part.trim();
-        if (!line.startsWith("data:")) continue;
-        const jsonStr = line.slice("data:".length).trim();
-        if (!jsonStr) continue;
-        onEvent(JSON.parse(jsonStr));
+  // Keyboard: Esc stops a run, Cmd/Ctrl+K focuses thread search.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape" && busy) {
+        e.preventDefault();
+        stop();
       }
-    }
-  };
-
-  const handleEvent = (event) => {
-    if (event.type === "thread") {
-      setThreadId(event.thread_id);
-    } else if (event.type === "step") {
-      if (event.tool_calls && event.tool_calls.length > 0) {
-        appendToolCall(event.tool_calls);
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSidebarOpen(true);
+        requestAnimationFrame(() => searchRef.current?.focus());
       }
-      if (event.content) {
-        appendMessage("message", event.role || "ai", event.content);
-      }
-    } else if (event.type === "crash") {
-      appendNotice(`Crashed: ${event.error}`, "crash");
-      setIsPaused(true);
-      setIsRunning(false);
-    } else if (event.type === "done") {
-      setIsRunning(false);
-    }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, stop]);
+
+  const newTask = () => {
+    if (busy) return;
+    reset();
+    setHashThread(null);
+    setSidebarOpen(false);
+    requestAnimationFrame(() => composerRef.current?.focus());
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isRunning) return;
-    const task = input;
-    setInput("");
-    appendMessage("message", "human", task);
-    setIsRunning(true);
-    setIsPaused(false);
-
-    const response = await fetch(`${API_BASE}/api/run`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task, thread_id: threadId }),
-    });
-
-    await consumeStream(response, handleEvent);
-    setIsRunning(false);
+  const selectThread = (id) => {
+    setSidebarOpen(false);
+    if (id === state.threadId || busy) return;
+    setHashThread(id);
+    load(id);
   };
 
-  const handleResume = async () => {
-    if (!threadId || isRunning) return;
-    setIsRunning(true);
-    setIsPaused(false);
-    appendNotice("Resuming...", "resume");
-
-    const response = await fetch(`${API_BASE}/api/resume`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ thread_id: threadId }),
-    });
-
-    await consumeStream(response, handleEvent);
-    setIsRunning(false);
-  };
-
-  const handleCrashButton = async () => {
-    if (isPaused) {
-      await handleResume();
-    } else {
-      await fetch(`${API_BASE}/api/arm_crash`, { method: "POST" });
-      appendNotice("Crash armed: next tool call will crash.", "crash");
-    }
-  };
+  const canResume = ["paused", "disconnected", "stopped"].includes(state.status);
+  const statusLabel = STATUS_LABEL[state.status];
 
   return (
-    <div className="app-shell">
-      <div className="chat-card">
-        <div className="chat-header">
-          <span className="chat-title">DeepAgent Chat</span>
-          {threadId && <span className="thread-badge">thread: {threadId}</span>}
-        </div>
+    <div className={`app ${panelOpen ? "panel-open" : ""} ${sidebarOpen ? "sidebar-open" : ""}`}>
+      <Sidebar
+        ref={searchRef}
+        threads={threads}
+        loading={loading}
+        error={error}
+        activeId={state.threadId}
+        activeStatus={state.status}
+        onSelect={selectThread}
+        onNew={newTask}
+        onRetry={refresh}
+        onClose={() => setSidebarOpen(false)}
+      />
+      <div className="scrim" onClick={() => { setSidebarOpen(false); if (window.innerWidth < 1024) setPanelOpen(false); }} aria-hidden="true" />
 
-        <div className="chat-messages" ref={scrollRef}>
-          {messages.map((m, i) => {
-            if (m.kind === "notice") {
-              return (
-                <div key={i} className={`notice notice-${m.variant}`}>
-                  <span className="notice-icon">{ICONS[m.variant] || ICONS.info}</span>
-                  {m.content}
-                </div>
-              );
-            }
-            if (m.kind === "tool-call") {
-              return (
-                <div key={i} className="tool-call-row">
-                  <span className="notice-icon">{ICONS.tool}</span>
-                  Calling tool(s):
-                  {m.tools.map((t, j) => (
-                    <span key={j} className="tool-chip">
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              );
-            }
-            return (
-              <div key={i} className={`message message-${m.role}`}>
-                <div className="message-icon">{roleIcon(m.role)}</div>
-                <div className="message-body">
-                  <div className="message-role">{roleLabel(m.role)}</div>
-                  <div className="message-content">{m.content}</div>
-                </div>
-              </div>
-            );
-          })}
+      <main className="main">
+        <header className="topbar">
+          <button className="btn btn-icon btn-ghost only-mobile" onClick={() => setSidebarOpen(true)} title="Threads">
+            <Icon name="menu" size={18} />
+            <span className="sr-only">Open threads</span>
+          </button>
+          <div className="topbar-title">
+            <h2>{state.title || (state.threadId ? "Untitled task" : "New task")}</h2>
+            {state.threadId && <code className="thread-id">{state.threadId}</code>}
+          </div>
+          <div className="topbar-actions">
+            {statusLabel && (
+              <span className={`status-pill status-${state.status}`} aria-live="polite">
+                {busy && <span className="spinner sm" />}
+                {statusLabel}
+              </span>
+            )}
+            {DEBUG && (
+              <button className="btn btn-ghost btn-sm tone-danger" onClick={armCrash} disabled={!state.threadId || !busy} title="Debug: the next tool call will raise">
+                <Icon name="alert" size={14} /> Simulate crash
+              </button>
+            )}
+            <button className="btn btn-icon btn-ghost" onClick={toggle} title={isDark ? "Light theme" : "Dark theme"}>
+              <Icon name={isDark ? "sun" : "moon"} size={16} />
+              <span className="sr-only">Toggle theme</span>
+            </button>
+            <button className={`btn btn-icon btn-ghost ${panelOpen ? "is-on" : ""}`} onClick={() => setPanelOpen((o) => !o)} title="Run details">
+              <Icon name="panel" size={16} />
+              <span className="sr-only">Toggle run details</span>
+            </button>
+          </div>
+        </header>
 
-          {isRunning && <ThinkingIndicator />}
-        </div>
-
-        <div className="chat-input-row">
-          <input
-            className="chat-input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSend()}
-            placeholder="Type an instruction..."
-            disabled={isRunning}
+        <Conversation state={state} onPickSample={(text) => composerRef.current?.fill(text)}>
+          {canResume && <CrashBanner status={state.status} error={state.error} onResume={resume} />}
+          <Composer
+            ref={composerRef}
+            busy={busy}
+            disabled={state.status === "loading"}
+            onSend={run}
+            onStop={stop}
+            placeholder={canResume ? "Resume above, or send a new instruction…" : state.threadId ? "Ask for changes or a follow-up…" : "Describe the content you want…"}
           />
-          <button className="btn btn-send" onClick={handleSend} disabled={isRunning || isPaused}>
-            Send
-          </button>
-          <button className={`btn btn-crash ${isPaused ? "btn-resume" : ""}`} onClick={handleCrashButton}>
-            {isPaused ? "Resume" : "Simulate Crash"}
-          </button>
-        </div>
-      </div>
+          <p className="hint">
+            <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line{busy && <> · <kbd>Esc</kbd> to stop</>}
+          </p>
+        </Conversation>
+      </main>
+
+      <RunPanel state={state} tab={panelTab} onTab={setPanelTab} onClose={() => setPanelOpen(false)} />
     </div>
   );
 }

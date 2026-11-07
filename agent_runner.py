@@ -169,6 +169,7 @@ class DeepAgentRunner:
         self.root_dir = os.path.abspath(root_dir or os.path.dirname(__file__))
 
         self.crash_controller = CrashController()
+        self._stop_requested = False
         self.checkpointer = checkpointer or JsonFileSaver(state_path="state.json", memory_path="memory.json")
         self.model = model or ChatOpenAI(model=model_name, api_key=os.environ.get("OPENAI_API_KEY"))
 
@@ -248,6 +249,10 @@ class DeepAgentRunner:
         if callable(close_fn):
             close_fn()
 
+    def is_alive(self) -> bool:
+        alive_fn = getattr(self.backend, "is_alive", None)
+        return bool(alive_fn()) if callable(alive_fn) else True
+
     @staticmethod
     def new_thread_id() -> str:
         return uuid.uuid4().hex[:8]
@@ -267,27 +272,37 @@ class DeepAgentRunner:
         """Arm the crash flag: the next tool call will raise an exception."""
         self.crash_controller.arm()
 
-    def stream_run(self, task: str, thread_id: str):
-        """Start a brand-new task on `thread_id`, yielding events as they happen."""
-        config = self._config(thread_id =thread_id)
+    # LangGraph v2 streaming: token chunks ("messages") + per-node deltas
+    # ("updates"), including subagent namespaces (subgraphs=True). See
+    # stream_events.EventMapper for how chunks become UI events.
+    STREAM_KWARGS = {"stream_mode": ["updates", "messages"], "subgraphs": True, "version": "v2"}
+
+    def request_stop(self):
+        """Ask the current stream to stop at the next chunk boundary."""
+        self._stop_requested = True
+
+    def _stream(self, agent_input, thread_id: str):
+        self._stop_requested = False
+        config = self._config(thread_id)
+        stream = self.agent.stream(agent_input, config, **self.STREAM_KWARGS)
         try:
-            for event in self.agent.stream(
-                {"messages": [{"role": "user", "content": task}]},
-                config,
-                stream_mode="values",
-            ):
-                yield {"type": "step", "data": event}
+            for chunk in stream:
+                yield {"type": "chunk", "data": chunk}
+                if self._stop_requested:
+                    yield {"type": "stopped"}
+                    return
         except Exception as e:
             yield {"type": "crash", "error": str(e)}
+        finally:
+            stream.close()
+
+    def stream_run(self, task: str, thread_id: str):
+        """Start a brand-new task on `thread_id`, yielding events as they happen."""
+        yield from self._stream({"messages": [{"role": "user", "content": task}]}, thread_id)
 
     def stream_resume(self, thread_id: str):
         """Resume `thread_id` from its last checkpoint (pass None as input)."""
-        config = self._config(thread_id)
-        try:
-            for event in self.agent.stream(None, config, stream_mode="values"):
-                yield {"type": "step", "data": event}
-        except Exception as e:
-            yield {"type": "crash", "error": str(e)}
+        yield from self._stream(None, thread_id)
 
     def get_state(self, thread_id: str):
         return self.agent.get_state(self._config(thread_id))

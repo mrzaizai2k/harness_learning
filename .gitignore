@@ -17,3 +17,6 @@ sample_queries.txt
 output/
 code_base_c_test/
 *.tmp
+# Frontend deps (overrides *.json above)
+!frontend/package.json
+!frontend/package-lock.json
