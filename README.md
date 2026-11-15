@@ -23,6 +23,10 @@ The agent writes a todo list (`write_todos`), and the **Plan** tab ticks it off 
 
 ![Live plan and tool calls](docs/images/plan-and-tools.jpg)
 
+When the run finishes, the chat shows a summary of the post (its sections, hashtags, recommended video and evaluator result), and the Plan tab shows every step done (8 of 8).
+
+![Completed run with the full plan ticked off](docs/images/completed-run.png)
+
 ### Hand work to subagents
 Research, evaluation and other jobs go to subagents. Some are defined locally (`researcher`, `evaluator` in `subagents.yaml`). Others are remote A2A agents (`code_analyzer`, `infotainment`, `todolist` in `agents/`). Each one gets its own card showing what it was asked to do, the steps it took and the result it returned.
 
@@ -33,10 +37,16 @@ The **Output** tab gathers what the agent produced: the recommended YouTube vide
 
 ![Output tab](docs/images/output.jpg)
 
+<img src="docs/images/output-video-hashtags-files.png" alt="Output tab: YouTube video card, hashtags and generated files" width="360">
+
 ### Grade its own draft and revise
 The `evaluator` subagent scores the draft out of 10. A missing image or YouTube link fails it automatically, and anything 5 or below goes back to the writer for another round. The **Evaluation** tab shows the score, the verdict, each check, the next steps and every attempt.
 
 ![Evaluation tab](docs/images/evaluation.jpg)
+
+Each attempt keeps its own report. Below, attempt 2 passes with 7/10, but the Image check still fails, so the next steps tell the writer to add a hero image.
+
+<img src="docs/images/evaluation-attempts.png" alt="Evaluation tab: attempt 2 passes 7/10 with a failed image check" width="360">
 
 ### Recover from crashes
 Each step is checkpointed (`JsonFileSaver`, saved in `memory/state.json`). If a run crashes, the connection drops or you press **Stop** (or Esc), a banner offers **Resume**, which continues from the last checkpoint. Add `?debug=1` to the URL to get a **Simulate crash** button that makes the next tool call fail on purpose.
