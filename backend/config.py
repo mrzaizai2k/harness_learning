@@ -34,3 +34,6 @@ SANDBOX_WORKDIR = "/workspace"
 
 # Frontend origins allowed to call the API (env, comma-separated)
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+
+# Langfuse tracing is on only when its keys are set (env)
+LANGFUSE_ENABLED = bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))

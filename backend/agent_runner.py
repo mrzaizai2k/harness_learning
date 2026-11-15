@@ -1,228 +1,62 @@
 """
-DeepAgentRunner: builds one deep agent (tools, subagents, skills, AGENTS.md
-memory) on top of a sandbox backend and a shared checkpointer, and streams
-its LangGraph v2 output per `thread_id`. The `thread_id` in the config is
-what lets the checkpointer resume a conversation after a crash or stop.
+DeepAgentRunner: one deep agent (tools, subagents, skills, AGENTS.md memory)
+on top of one sandbox backend. It streams LangGraph v2 output per
+`thread_id`; the `thread_id` in the config is what lets the shared
+checkpointer resume a conversation after a crash or stop.
+
+RunnerPool: one runner, and so one Docker sandbox, per conversation thread.
 """
 
-import os
 import uuid
-from typing import cast
-import yaml
-from pathlib import Path
+
+from deepagents import create_deep_agent
+from deepagents.backends.protocol import BackendProtocol
+from langchain.agents.middleware import TodoListMiddleware
+from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from backend import config
-from backend.json_saver import JsonFileSaver
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-from deepagents.backends import FilesystemBackend
-from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
-from langchain_core.runnables import RunnableConfig
-from pydantic_ai_backends import RuntimeConfig
+from backend.crash import CrashMiddleware
 from backend.docker_sandbox import PydanticDockerSandboxBackend
-from langchain.agents.middleware import TodoListMiddleware
-from deepagents import create_deep_agent
-from backend.subagent_registry import SubAgentRegistry
+from backend.prompts import WRITE_TODOS_SYSTEM_PROMPT, WRITE_TODOS_TOOL
+from backend.subagent_registry import SubAgentRegistry, load_subagents
+from backend.tools import download_image, generate_hashtags, move_file, web_search
 
-from langfuse import get_client
-from langfuse.langchain import CallbackHandler
-
-from backend.prompts import WRITE_TODOS_TOOL, WRITE_TODOS_SYSTEM_PROMPT
-from backend.tool_manager import (
-    web_search,
-    generate_hashtags,
-    download_image,
-    move_file,
-)
-
-
-def load_subagents(config_path: Path) -> list:
-    """Load subagent definitions from YAML and wire up tools.
-    
-    NOTE: This is a custom utility for this example. Unlike `memory` and `skills`,
-    deepagents doesn't natively load subagents from files - they're normally
-    defined inline in the create_deep_agent() call. We externalize to YAML here
-    to keep configuration separate from code.
-    """
-    available_tools = {
-        "web_search": web_search,
-    }
-    
-    if not config_path.exists():
-        print(f"Warning: Subagents config not found at {config_path}")
-        return []
-    
-    try:
-        with open(config_path) as f:
-            specs = yaml.safe_load(f)
-        
-        if not specs:
-            print("Warning: Empty subagents configuration")
-            return []
-        
-        subagents = []
-        for name, spec in specs.items():
-            if not isinstance(spec, dict):
-                print(f"Warning: Invalid spec for subagent '{name}', skipping")
-                continue
-            
-            subagent = {
-                "name": name,
-                "description": spec.get("description", ""),
-                "system_prompt": spec.get("system_prompt", ""),
-            }
-            
-            if "model" in spec:
-                subagent["model"] = spec["model"]
-            
-            if "tools" in spec:
-                tools = []
-                for tool_name in spec["tools"]:
-                    if tool_name in available_tools:
-                        tools.append(available_tools[tool_name])
-                    else:
-                        print(f"Warning: Unknown tool '{tool_name}' for subagent '{name}'")
-                subagent["tools"] = tools
-            
-            subagents.append(subagent)
-        
-        return subagents
-    except Exception as e:
-        print(f"Error loading subagents: {e}")
-        return []
-
-
-class CrashController:
-    """
-    A shared, mutable flag that tools consult before doing their work.
-    When armed, the NEXT tool call raises an exception (simulating a
-    crashed process) and then automatically disarms itself.
-    """
-
-    def __init__(self):
-        self.armed = False
-
-    def arm(self):
-        self.armed = True
-
-    def maybe_crash(self, context: str):
-        if self.armed:
-            self.armed = False
-            raise RuntimeError(f"Simulated crash during: {context}")
+TOOLS = [web_search, download_image, generate_hashtags, move_file]
 
 
 class DeepAgentRunner:
-    """
-    Wraps one agent + one checkpointer. Call `new_thread_id()` to start an
-    independent task, `stream_run(task, thread_id)` to start it, and
-    `stream_resume(thread_id)` to continue after a crash.
-    """
+    """Start a task with `stream_run`, continue it with `stream_resume`."""
 
-    def __init__(
-        self,
-        model_name: str = config.MODEL_NAME,
-        root_dir: str | None = None,
-        backend: SandboxBackendProtocol | None = None,
-        use_docker: bool = False,
-        docker_runtime: str | RuntimeConfig | None = config.SANDBOX_RUNTIME,
-        docker_container_name: str | None = None,
-        docker_volumes: dict[str, str] | None = None,
-        docker_work_dir: str = config.SANDBOX_WORKDIR,
-        model: ChatOpenAI | None = None,
-        checkpointer: JsonFileSaver | None = None,
-    ):
-        """
-        `model` and `checkpointer` can be injected so multiple `DeepAgentRunner`
-        instances (e.g. one per conversation thread, each with its own Docker
-        container) share the same underlying model client and checkpoint
-        store instead of each constructing their own. This matters most for
-        `checkpointer`: multiple `JsonFileSaver` instances all pointing at the
-        same `state.json` risk clobbering each other's writes under
-        concurrent access, whereas one shared instance safely multiplexes
-        threads via `thread_id` in `config`, same as the original design.
-        """
-        self.root_dir = os.path.abspath(root_dir or config.PROJECT_ROOT)
-
-        self.crash_controller = CrashController()
+    def __init__(self, model: BaseChatModel, checkpointer: BaseCheckpointSaver, backend: BackendProtocol):
+        self.backend = backend
+        self.crash = CrashMiddleware()
         self._stop_requested = False
-        self.checkpointer = checkpointer or JsonFileSaver(state_path=config.STATE_PATH, memory_path=config.MEMORY_PATH)
-        self.model = model or ChatOpenAI(model=model_name)  # reads OPENAI_API_KEY from env
 
-        if backend is not None and use_docker:
-            raise ValueError("Pass either `backend` or `use_docker=True`, not both.")
-
-        self.backend: BackendProtocol
-        if backend is not None:
-            self.backend = backend
-        elif use_docker:
-            self.backend = PydanticDockerSandboxBackend.create(
-                runtime=docker_runtime,
-                container_name=docker_container_name,
-                volumes=docker_volumes,
-                work_dir=docker_work_dir,
-                auto_copy_files=True,
-                source_dir=self.root_dir,
-            )
-        else:
-            self.backend = FilesystemBackend(root_dir=self.root_dir, virtual_mode=True)
-
-        crash_controller = self.crash_controller
-        backend_ref = cast(BackendProtocol, self.backend)
-        self.langfuse = get_client()
-        self.langfuse_handler = CallbackHandler()
-
-        @tool
-        def list_files(directory: str = "/") -> str:
-            """List files in a directory."""
-            crash_controller.maybe_crash(f"list_files({directory})")
-            result = backend_ref.ls(directory)
-            if result.error:
-                return f"Error: {result.error}"
-            return "\n".join(sorted(entry["path"] for entry in result.entries or []))
-
-        @tool
-        def read_file(path: str) -> str:
-            """Read a file's contents."""
-            crash_controller.maybe_crash(f"read_file({path})")
-            result = backend_ref.read(path)
-            if result.error or result.file_data is None:
-                return f"Error: {result.error or 'file not found'}"
-            return result.file_data["content"]
-
-        @tool
-        def count_words(text: str) -> int:
-            """Count words in a string."""
-            crash_controller.maybe_crash("count_words")
-            return len(text.split())
-
-        tools = [
-            list_files,
-            read_file,
-            count_words,
-            generate_hashtags,
-            download_image,
-            web_search,
-            move_file,
-        ]
-
-        registry = SubAgentRegistry(agent_list_path=config.AGENT_LIST_PATH)
-
+        subagents = (
+            load_subagents(config.SUBAGENTS_YAML, {t.name: t for t in TOOLS})
+            + SubAgentRegistry(agent_list_path=config.AGENT_LIST_PATH).get_subagents()
+        )
         self.agent = create_deep_agent(
-            model=self.model,
-            backend=self.backend,
-            tools=tools,
-            subagents=load_subagents(config.SUBAGENTS_YAML) + registry.get_subagents(),
-            checkpointer=self.checkpointer,
-            middleware=[TodoListMiddleware(system_prompt=WRITE_TODOS_SYSTEM_PROMPT, tool_description=WRITE_TODOS_TOOL)],
+            model=model,
+            backend=backend,
+            tools=TOOLS,
+            subagents=subagents,
+            checkpointer=checkpointer,
+            middleware=[
+                TodoListMiddleware(system_prompt=WRITE_TODOS_SYSTEM_PROMPT, tool_description=WRITE_TODOS_TOOL),
+                self.crash,
+            ],
             memory=["./AGENTS.md"],
             skills=["./skills/"],
         )
 
-    def close(self):
-        """Tear down the backend if it needs explicit cleanup (e.g. Docker containers)."""
-        close_fn = getattr(self.backend, "close", None)
-        if callable(close_fn):
-            close_fn()
+        self._callbacks = []
+        if config.LANGFUSE_ENABLED:
+            from langfuse.langchain import CallbackHandler
+
+            self._callbacks.append(CallbackHandler())
 
     @staticmethod
     def new_thread_id() -> str:
@@ -232,25 +66,22 @@ class DeepAgentRunner:
         return {
             "configurable": {"thread_id": thread_id},
             "run_name": f"thread-{thread_id}",
-            "tags": [f"thread:{thread_id}"],
-            "callbacks": [self.langfuse_handler],
-            "metadata": {
-                "langfuse_session_id": thread_id,  # groups all runs of a thread into one Langfuse session
-            },
+            "callbacks": self._callbacks,
+            "metadata": {"langfuse_session_id": thread_id},  # one Langfuse session per thread
         }
 
-    def arm_crash(self):
-        """Arm the crash flag: the next tool call will raise an exception."""
-        self.crash_controller.arm()
+    def arm_crash(self) -> None:
+        """The next tool call will raise (see crash.py)."""
+        self.crash.arm()
 
-    # LangGraph v2 streaming: token chunks ("messages") + per-node deltas
-    # ("updates"), including subagent namespaces (subgraphs=True). See
-    # stream_events.EventMapper for how chunks become UI events.
-    def request_stop(self):
-        """Ask the current stream to stop at the next chunk boundary."""
+    def request_stop(self) -> None:
+        """Stop the current stream at the next chunk; the checkpoint is kept."""
         self._stop_requested = True
 
     def _stream(self, agent_input, thread_id: str):
+        # v2 streaming: token chunks ("messages") and per-node deltas ("updates"),
+        # including subagent namespaces. stream_events.EventMapper turns these
+        # chunks into UI events.
         self._stop_requested = False
         stream = self.agent.stream(
             agent_input,
@@ -271,16 +102,52 @@ class DeepAgentRunner:
             stream.close()  # pyright: ignore[reportAttributeAccessIssue] -- it is a generator
 
     def stream_run(self, task: str, thread_id: str):
-        """Start a brand-new task on `thread_id`, yielding events as they happen."""
+        """Start a new task on `thread_id`."""
         yield from self._stream({"messages": [{"role": "user", "content": task}]}, thread_id)
 
     def stream_resume(self, thread_id: str):
-        """Resume `thread_id` from its last checkpoint (pass None as input)."""
+        """Continue `thread_id` from its last checkpoint (input None = resume)."""
         yield from self._stream(None, thread_id)
 
-    def get_state(self, thread_id: str):
-        return self.agent.get_state(self._config(thread_id))
+    def close(self) -> None:
+        self.backend.close()  # pyright: ignore[reportAttributeAccessIssue] -- sandbox backend
 
-    def is_paused(self, thread_id: str) -> bool:
-        """True if the graph stopped mid-task (i.e. there's a `next` step waiting)."""
-        return bool(self.get_state(thread_id).next)
+
+class RunnerPool:
+    """Lazily creates one runner per thread, each with its own Docker sandbox,
+    so concurrent conversations never share a filesystem. The model and the
+    checkpointer are shared (the checkpointer keys everything by thread_id)."""
+
+    def __init__(self, model: BaseChatModel, checkpointer: BaseCheckpointSaver):
+        self.model = model
+        self.checkpointer = checkpointer
+        self._runners: dict[str, DeepAgentRunner] = {}
+
+    def __len__(self) -> int:
+        return len(self._runners)
+
+    def get(self, thread_id: str) -> DeepAgentRunner | None:
+        return self._runners.get(thread_id)
+
+    def get_or_create(self, thread_id: str) -> DeepAgentRunner:
+        if thread_id not in self._runners:
+            sandbox = PydanticDockerSandboxBackend.create(
+                runtime=config.SANDBOX_RUNTIME,
+                container_name=f"deepagents_sandbox_{thread_id}",
+                work_dir=config.SANDBOX_WORKDIR,
+                auto_copy_files=True,  # AGENTS.md, skills/ … (respects .dockerignore)
+                source_dir=str(config.PROJECT_ROOT),
+            )
+            self._runners[thread_id] = DeepAgentRunner(self.model, self.checkpointer, sandbox)
+        return self._runners[thread_id]
+
+    def close(self, thread_id: str) -> bool:
+        runner = self._runners.pop(thread_id, None)
+        if runner is None:
+            return False
+        runner.close()
+        return True
+
+    def close_all(self) -> None:
+        for thread_id in list(self._runners):
+            self.close(thread_id)

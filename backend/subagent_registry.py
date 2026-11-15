@@ -7,6 +7,7 @@ import logging
 from typing import TypedDict, Annotated, Optional
 
 import httpx
+import yaml
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import AIMessage
@@ -19,7 +20,35 @@ logger = logging.getLogger("subagent_registry")
 
 
 # ==================================================
-# Generic A2A graph (parameterized version of
+# Local subagents (subagents.yaml)
+# ==================================================
+
+def load_subagents(config_path, available_tools: dict) -> list[dict]:
+    """Turn subagents.yaml into deepagents subagent dicts.
+
+    deepagents loads `memory` and `skills` from disk but expects subagents
+    inline, so we keep them in YAML and map tool names to tool objects here.
+    """
+    with open(config_path, encoding="utf-8") as f:
+        specs = yaml.safe_load(f) or {}
+
+    subagents = []
+    for name, spec in specs.items():
+        subagent = {
+            "name": name,
+            "description": spec.get("description", ""),
+            "system_prompt": spec.get("system_prompt", ""),
+        }
+        if "model" in spec:
+            subagent["model"] = spec["model"]
+        if "tools" in spec:
+            subagent["tools"] = [available_tools[t] for t in spec["tools"]]
+        subagents.append(subagent)
+    return subagents
+
+
+# ==================================================
+# Remote A2A subagents: generic A2A graph (parameterized version of
 # build_infotainment_graph, reusable for any agent URL)
 # ==================================================
 
@@ -149,7 +178,7 @@ class SubAgentRegistry:
 
         agent = create_deep_agent(
             ...,
-            subagents=load_subagents(Path("./subagents.yaml")) + subagents,
+            subagents=load_subagents("subagents.yaml", {"web_search": web_search}) + subagents,
         )
     """
 

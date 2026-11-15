@@ -1,345 +1,112 @@
 """
-FastAPI SSE backend for Content Studio.
+FastAPI backend for Content Studio: runs the agent and streams it as SSE.
 
-Each conversation `thread_id` gets its own DeepAgentRunner and Docker sandbox
-(project files are copied into /workspace). The model client and the
-checkpointer are shared across threads.
+Each conversation thread gets its own DeepAgentRunner and Docker sandbox
+(see agent_runner.RunnerPool). Thread history and files live in
+routes_threads.py.
 
 Run with:
-    uvicorn backend.main:app --reload --port 8000
+    make be        # uvicorn backend.main:app --reload --port 8000
 """
 
 import json
-import asyncio
-import mimetypes
-import os
-import shlex
-from typing import Any, Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from langchain_openai import ChatOpenAI
-from deepagents import create_deep_agent
+from starlette.concurrency import iterate_in_threadpool
 
-from backend import config
+from backend import config, routes_threads
 from backend.agent_runner import DeepAgentRunner
-from backend.stream_events import EventMapper, file_kind
-from backend.json_saver import JsonFileSaver
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Shared across every thread: cheap to construct, and JsonFileSaver is
-# designed to multiplex many threads over one store. Only the Docker
-# backend is actually duplicated per thread (see RunnerPool below).
-_shared_model = ChatOpenAI(model=config.MODEL_NAME)  # reads OPENAI_API_KEY from env
-_shared_checkpointer = JsonFileSaver(state_path=config.STATE_PATH, memory_path=config.MEMORY_PATH)
-
-# Project directory copied into each sandbox
-_project_root = str(config.PROJECT_ROOT)
+from backend.deps import pool
+from backend.stream_events import EventMapper
 
 
-class RunnerPool:
-    """Lazily creates one `DeepAgentRunner` (and one Docker container) per
-    `thread_id`, so concurrent conversations never write into each other's
-    container filesystem.
-    
-    Each new container automatically receives a copy of the project files
-    (respecting .dockerignore) so agents have access to agents.md, skills/, etc.
-    """
-
-    def __init__(self, project_root: str):
-        self._runners: dict[str, DeepAgentRunner] = {}
-        self._project_root = project_root
-
-    def get_or_create(self, thread_id: str) -> DeepAgentRunner:
-        if thread_id not in self._runners:
-            print(f"Creating new Docker sandbox for thread: {thread_id}")
-            self._runners[thread_id] = DeepAgentRunner(
-                model=_shared_model,
-                checkpointer=_shared_checkpointer,
-                root_dir=self._project_root,
-                use_docker=True,
-                docker_runtime=config.SANDBOX_RUNTIME,
-                docker_container_name=f"deepagents_sandbox_{thread_id}",
-                docker_work_dir=config.SANDBOX_WORKDIR,
-            )
-            print(f"✓ Docker sandbox ready for thread: {thread_id}")
-        return self._runners[thread_id]
-
-    def get(self, thread_id: str) -> Optional[DeepAgentRunner]:
-        return self._runners.get(thread_id)
-
-    def close(self, thread_id: str) -> bool:
-        runner = self._runners.pop(thread_id, None)
-        if runner is None:
-            return False
-        print(f"Closing Docker sandbox for thread: {thread_id}")
-        runner.close()
-        return True
-
-    def close_all(self) -> None:
-        """Close all running containers (useful for cleanup on shutdown)."""
-        for thread_id in list(self._runners.keys()):
-            self.close(thread_id)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    pool.close_all()  # remove every thread's sandbox container on shutdown
 
 
-pool = RunnerPool(project_root=_project_root)
-
-
-# Cleanup on shutdown
-@app.on_event("shutdown")
-async def shutdown_event():
-    print("Shutting down: closing all Docker containers...")
-    pool.close_all()
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+app.include_router(routes_threads.router)
 
 
 class RunRequest(BaseModel):
     task: str
-    thread_id: Optional[str] = None
+    thread_id: str | None = None
 
 
 class ThreadRequest(BaseModel):
     thread_id: str
 
 
-def sse_format(event: dict) -> str:
+def sse(event: dict) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
-_SENTINEL: Any = object()
+async def sse_stream(runner_events, thread_id: str | None = None):
+    """Runner events -> UI events (stream_events.py) -> SSE lines.
 
-
-async def sse_from_sync_generator(gen):
-    """DeepAgentRunner's generators are sync; run them in a thread pool so
-    they don't block the event loop, mapping each LangGraph v2 chunk into UI
-    events (see stream_events.py) and yielding SSE-formatted chunks.
-
-    NOTE: we pass `_SENTINEL` as next()'s default instead of letting
-    StopIteration propagate out of the executor thread — PEP 479 forbids a
-    StopIteration from crossing a Future boundary.
-    """
-    loop = asyncio.get_event_loop()
+    The runner is a sync generator, so it runs in a thread pool to keep the
+    event loop free."""
+    if thread_id:
+        yield sse({"type": "thread", "thread_id": thread_id})
     mapper = EventMapper()
-    it = iter(gen)
-    while True:
-        event = await loop.run_in_executor(None, next, it, _SENTINEL)
-        if event is _SENTINEL:
-            break
+    async for event in iterate_in_threadpool(runner_events):
         if event["type"] == "chunk":
             for ui_event in mapper.map(event["data"]):
-                yield sse_format(ui_event)
-        elif event["type"] == "crash":
-            yield sse_format({"type": "crash", "error": event["error"]})
-        elif event["type"] == "stopped":
-            yield sse_format({"type": "stopped"})
-    yield sse_format({"type": "done"})
+                yield sse(ui_event)
+        else:  # "crash" or "stopped"
+            yield sse(event)
+    yield sse({"type": "done"})
 
 
-_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+def sse_response(gen) -> StreamingResponse:
+    return StreamingResponse(gen, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def existing_runner(thread_id: str) -> DeepAgentRunner:
+    runner = pool.get(thread_id)
+    if runner is None:
+        raise HTTPException(status_code=404, detail=f"No runner for thread_id '{thread_id}'")
+    return runner
 
 
 @app.post("/api/run")
 async def run_task(req: RunRequest):
     thread_id = req.thread_id or DeepAgentRunner.new_thread_id()
     runner = pool.get_or_create(thread_id)
-    gen = runner.stream_run(req.task, thread_id)
-
-    async def stream():
-        yield sse_format({"type": "thread", "thread_id": thread_id})
-        async for chunk in sse_from_sync_generator(gen):
-            yield chunk
-
-    return StreamingResponse(stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
+    return sse_response(sse_stream(runner.stream_run(req.task, thread_id), thread_id))
 
 
 @app.post("/api/resume")
 async def resume_task(req: ThreadRequest):
     runner = pool.get_or_create(req.thread_id)
-    gen = runner.stream_resume(req.thread_id)
-    return StreamingResponse(sse_from_sync_generator(gen), media_type="text/event-stream", headers=_SSE_HEADERS)
-
-
-@app.post("/api/arm_crash")
-async def arm_crash(req: ThreadRequest):
-    """Arms that thread's CrashController: the very next tool call on
-    `req.thread_id` (in the currently running or next-started stream) will
-    raise."""
-    runner = pool.get_or_create(req.thread_id)
-    runner.arm_crash()
-    return {"armed": True, "thread_id": req.thread_id}
+    return sse_response(sse_stream(runner.stream_resume(req.thread_id)))
 
 
 @app.post("/api/threads/{thread_id}/stop")
 async def stop_thread(thread_id: str):
-    """Cooperatively stop the running stream; the checkpoint is kept, so the
-    thread can be resumed later with /api/resume."""
-    runner = pool.get(thread_id)
-    if runner is None:
-        raise HTTPException(status_code=404, detail=f"No runner for thread_id '{thread_id}'")
-    runner.request_stop()
+    """Stop the running stream; the checkpoint is kept, so it can be resumed."""
+    existing_runner(thread_id).request_stop()
     return {"stopping": True, "thread_id": thread_id}
 
 
-@app.get("/api/state/{thread_id}")
-async def get_state(thread_id: str):
-    runner = pool.get(thread_id)
-    if runner is None:
-        raise HTTPException(status_code=404, detail=f"No runner for thread_id '{thread_id}'")
-    return {"paused": runner.is_paused(thread_id)}
+@app.post("/api/arm_crash")
+async def arm_crash(req: ThreadRequest):
+    """Debug: the next tool call on this thread raises (see crash.py)."""
+    pool.get_or_create(req.thread_id).arm_crash()
+    return {"armed": True, "thread_id": req.thread_id}
 
 
 @app.post("/api/close/{thread_id}")
 async def close_thread(thread_id: str):
-    """Stop and remove that thread's Docker container once you're done with it."""
-    closed = pool.close(thread_id)
-    if not closed:
+    """Remove the thread's sandbox container. Its history stays in the checkpointer."""
+    if not pool.close(thread_id):
         raise HTTPException(status_code=404, detail=f"No runner for thread_id '{thread_id}'")
     return {"closed": True, "thread_id": thread_id}
-
-
-# ---------------------------------------------------------------------- #
-# Thread history (read straight from the checkpointer, no container needed)
-# ---------------------------------------------------------------------- #
-# A container-free graph used only to *read* thread state. Reading through a
-# compiled graph (rather than the raw checkpoint) matters: newer LangGraph
-# stores `messages` as a delta channel that only the graph can rebuild.
-_history_reader = create_deep_agent(model=_shared_model, checkpointer=_shared_checkpointer)
-
-
-def _read_thread(thread_id: str):
-    """(messages, todos, updated_at, paused) for a thread, or None."""
-    snap = _history_reader.get_state({"configurable": {"thread_id": thread_id}})
-    messages = snap.values.get("messages", []) or []
-    if not messages:
-        return None
-    return messages, snap.values.get("todos"), snap.created_at, bool(snap.next)
-
-
-def _title(messages: list) -> str:
-    for m in messages:
-        if getattr(m, "type", "") == "human":
-            text = m.content if isinstance(m.content, str) else str(m.content)
-            text = " ".join(text.split())
-            return text[:60] + ("…" if len(text) > 60 else "")
-    return "Untitled task"
-
-
-@app.get("/api/threads")
-async def list_threads():
-    """All threads known to the checkpointer (survives server restarts),
-    newest first, flagged with whether a live container exists."""
-    threads = []
-    for thread_id in list(_shared_checkpointer.storage.keys()):
-        found = await asyncio.to_thread(_read_thread, thread_id)
-        if found is None:
-            continue
-        messages, _todos, ts, paused = found
-        threads.append({
-            "thread_id": thread_id,
-            "title": _title(messages),
-            "updated_at": ts,
-            "paused": paused,
-            "alive": pool.get(thread_id) is not None,
-        })
-    threads.sort(key=lambda t: t["updated_at"] or "", reverse=True)
-    return {"threads": threads}
-
-
-@app.get("/api/threads/{thread_id}")
-async def get_thread(thread_id: str):
-    """Rebuild a thread as the same UI events the live stream emits."""
-    found = await asyncio.to_thread(_read_thread, thread_id)
-    if found is None:
-        raise HTTPException(status_code=404, detail=f"Unknown thread_id '{thread_id}'")
-    messages, todos, ts, paused = found
-    events = EventMapper().replay(messages, todos)
-    return {
-        "thread_id": thread_id,
-        "title": _title(messages),
-        "updated_at": ts,
-        "paused": paused,
-        "events": events,
-    }
-
-
-# ---------------------------------------------------------------------- #
-# Files produced by the agent
-# ---------------------------------------------------------------------- #
-# The agent's built-in file tools write inside the thread's Docker sandbox,
-# while `download_image` / `move_file` (tool_manager.py) write on the host.
-_CONTENT_DIRS = config.CONTENT_DIRS
-
-
-def _clean_rel_path(path: str) -> str:
-    rel = path.strip().lstrip("/")
-    if rel.startswith("workspace/"):
-        rel = rel[len("workspace/"):]
-    parts = [p for p in rel.split("/") if p not in ("", ".")]
-    if not parts or ".." in parts:
-        raise HTTPException(status_code=400, detail="Invalid path")
-    return "/".join(parts)
-
-
-def _host_file(rel: str) -> Optional[str]:
-    if rel.split("/")[0] not in _CONTENT_DIRS:
-        return None
-    full = os.path.realpath(os.path.join(_project_root, rel))
-    if not full.startswith(_project_root + os.sep) or not os.path.isfile(full):
-        return None
-    return full
-
-
-@app.get("/api/threads/{thread_id}/files")
-async def list_files(thread_id: str):
-    """Content files in the thread's sandbox (blogs/, research/, output/ …)."""
-    runner = pool.get(thread_id)
-    files: list[dict] = []
-    execute = getattr(runner.backend, "execute", None) if runner is not None else None
-    if execute is not None:
-        dirs = " ".join(shlex.quote(d) for d in _CONTENT_DIRS)
-        cmd = f"cd /workspace && for d in {dirs}; do [ -d \"$d\" ] && find \"$d\" -type f; done; true"
-        result = await asyncio.to_thread(execute, cmd)
-        for line in (getattr(result, "output", "") or "").splitlines():
-            line = line.strip()
-            if line:
-                files.append({"path": line, "kind": file_kind(line), "source": "sandbox"})
-    return {"files": files}
-
-
-@app.get("/api/threads/{thread_id}/files/raw")
-async def read_file_raw(thread_id: str, path: str):
-    """Serve one file: the thread's sandbox first, then the host content dirs."""
-    rel = _clean_rel_path(path)
-    content: Optional[bytes] = None
-    runner = pool.get(thread_id)
-    if runner is not None and hasattr(runner.backend, "download_files"):
-        resp = (await asyncio.to_thread(runner.backend.download_files, [rel]))[0]
-        if not getattr(resp, "error", None) and resp.content is not None:
-            content = resp.content
-    if content is None:
-        host = _host_file(rel)
-        if host is None:
-            raise HTTPException(status_code=404, detail=f"File not found: {rel}")
-        with open(host, "rb") as f:
-            content = f.read()
-    media_type = mimetypes.guess_type(rel)[0] or "application/octet-stream"
-    if rel.endswith((".md", ".markdown")):
-        media_type = "text/markdown; charset=utf-8"
-    return Response(content=content, media_type=media_type)
-
-
-@app.post("/api/close_all")
-async def close_all_threads():
-    """Close all active Docker containers."""
-    count = len(pool._runners)
-    pool.close_all()
-    return {"closed": count, "message": f"Closed {count} containers"}

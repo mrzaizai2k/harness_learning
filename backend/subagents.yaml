@@ -1,5 +1,5 @@
 # Subagent definitions
-# Loaded by agent_runner.load_subagents and wired up with tools from tool_manager.py
+# Loaded by subagent_registry.load_subagents and wired up with tools from tools.py
 
 researcher:
   description: >
