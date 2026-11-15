@@ -1,22 +1,6 @@
 import { useState } from "react";
 import Icon from "./Icon.jsx";
-
-const FRIENDLY = {
-  web_search: "Searching the web",
-  write_file: "Writing file",
-  edit_file: "Editing file",
-  read_file: "Reading file",
-  ls: "Listing files",
-  list_files: "Listing files",
-  glob: "Finding files",
-  grep: "Searching files",
-  write_todos: "Updating plan",
-  download_image: "Downloading image",
-  move_file: "Moving file",
-  generate_hashtags: "Generating hashtags",
-  count_words: "Counting words",
-  execute: "Running command",
-};
+import { TOOL_LABELS } from "../constants.js";
 
 function summarize(name, args = {}) {
   const v =
@@ -41,7 +25,7 @@ export function StatusDot({ status }) {
 
 export default function ToolCallCard({ tool }) {
   const [open, setOpen] = useState(false);
-  const label = FRIENDLY[tool.name] || tool.name;
+  const label = TOOL_LABELS[tool.name] || tool.name;
   const detail = summarize(tool.name, tool.args);
   const time = duration(tool.startedAt, tool.endedAt);
 
