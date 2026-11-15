@@ -54,19 +54,24 @@ React UI (frontend/)  ──POST /api/run (SSE)──▶  FastAPI (backend/main.
                                                               subgraphs=True, version="v2")
 ```
 
-- **`backend/agent_runner.py`**: `DeepAgentRunner` builds the deep agent (`create_deep_agent`) with custom tools, local and A2A subagents, skills, `AGENTS.md` memory and the todo middleware. It streams using LangGraph's v2 stream format, with subagent output included.
+- **`backend/agent_runner.py`**: `DeepAgentRunner` builds the deep agent (`create_deep_agent`) with custom tools, local and A2A subagents, skills, `AGENTS.md` memory and the todo and crash middleware. It streams using LangGraph's v2 stream format, with subagent output included. `RunnerPool` gives each thread its own runner and Docker sandbox.
 - **`backend/stream_events.py`**: `EventMapper` turns raw LangGraph chunks into a small JSON event protocol. It tags each event with the subagent it came from, removes duplicate messages, and parses evaluator reports.
-- **`backend/main.py`**: SSE endpoints, the thread history API (read through the graph, so no container is needed), and file serving from the thread's sandbox or the host `output/` folder.
+- **`backend/main.py`**: the SSE endpoints (run, resume, stop, simulate crash).
+- **`backend/routes_threads.py`**: the thread history API (read through the graph, so no container is needed) and file serving from the thread's sandbox or the host `output/` folder.
+- **`backend/crash.py`**: `CrashMiddleware`, which makes the next tool call fail on purpose so you can try resume.
 
 ## Project structure
 ```
 backend/                  FastAPI backend (run as the `backend` package)
-  main.py                 API: streaming, threads, files, stop/resume
-  agent_runner.py         DeepAgentRunner: builds the agent, v2 streaming
+  main.py                 API: run/resume streaming (SSE), stop, simulate crash
+  routes_threads.py       API: thread history and agent files
+  agent_runner.py         DeepAgentRunner (builds the agent, v2 streaming) + RunnerPool
+  deps.py                 shared model client, checkpointer and runner pool
+  crash.py                CrashMiddleware: simulated crash for the resume demo
   stream_events.py        LangGraph stream -> UI events, evaluator parser
   config.py               all paths and settings in one place
-  tool_manager.py         tools: web_search, download_image, generate_hashtags, move_file
-  subagent_registry.py    discovers remote A2A subagents
+  tools.py                tools: web_search, download_image, generate_hashtags, move_file
+  subagent_registry.py    loads local subagents (YAML) and discovers remote A2A ones
   subagents.yaml          local subagents (researcher, evaluator)
   agent_list.json         A2A agent URLs for local runs (localhost)
   agent_list.compose.json A2A agent URLs inside Docker Compose (service names)
@@ -79,6 +84,7 @@ skills/                   skill playbooks: blog-post, social-media, code-analysi
 AGENTS.md                 brand voice + workflow (copied into every sandbox with skills/)
 frontend/                 React + Vite UI
   src/api/client.js       REST + SSE client
+  src/constants.js        tool-call labels
   src/state/threadReducer.js  event -> UI state
   src/hooks/              useAgentStream (run/resume/stop), useThreads
   src/components/         Sidebar, Conversation, Timeline, RunPanel, Composer, CrashBanner
