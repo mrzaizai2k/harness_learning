@@ -10,7 +10,9 @@ It comes with a FastAPI streaming backend, a React UI that shows each step as it
 - [What it can do](#what-it-can-do)
 - [How it works](#how-it-works)
 - [Project structure](#project-structure)
-- [How to run](#how-to-run)
+- [Setup](#setup)
+  - [Option A: Docker Compose (everything)](#option-a-docker-compose-everything)
+  - [Option B: Makefile (one piece at a time)](#option-b-makefile-one-piece-at-a-time)
 - [Configuration](#configuration)
 - [Streaming event protocol](#streaming-event-protocol)
 
@@ -37,7 +39,7 @@ The `evaluator` subagent scores the draft out of 10. A missing image or YouTube 
 ![Evaluation tab](docs/images/evaluation.jpg)
 
 ### Recover from crashes
-Each step is checkpointed (`JsonFileSaver`, saved in `state.json`). If a run crashes, the connection drops or you press **Stop** (or Esc), a banner offers **Resume**, which continues from the last checkpoint. Add `?debug=1` to the URL to get a **Simulate crash** button that makes the next tool call fail on purpose.
+Each step is checkpointed (`JsonFileSaver`, saved in `memory/state.json`). If a run crashes, the connection drops or you press **Stop** (or Esc), a banner offers **Resume**, which continues from the last checkpoint. Add `?debug=1` to the URL to get a **Simulate crash** button that makes the next tool call fail on purpose.
 
 ### Keep every conversation
 Threads are listed from the checkpointer, so they survive server restarts. You can search them (⌘/Ctrl+K), open one by URL (`#/t/<thread_id>`), and reloading a page rebuilds it exactly as it looked live. The UI has light and dark themes and fits narrow screens: the side panels turn into drawers.
@@ -45,68 +47,114 @@ Threads are listed from the checkpointer, so they survive server restarts. You c
 ## How it works
 
 ```
-React UI (frontend/)  ──POST /api/run (SSE)──▶  FastAPI (main.py)
+React UI (frontend/)  ──POST /api/run (SSE)──▶  FastAPI (backend/main.py)
         ▲                                          │  one DeepAgentRunner + Docker sandbox per thread
         │  token / tool_call / todos / ...          ▼
         └───────── stream_events.EventMapper ◀── agent.stream(stream_mode=["updates","messages"],
                                                               subgraphs=True, version="v2")
 ```
 
-- **`agent_runner.py`**: `DeepAgentRunner` builds the deep agent (`create_deep_agent`) with custom tools, local and A2A subagents, skills, `AGENTS.md` memory and the todo middleware. It streams using LangGraph's v2 stream format, with subagent output included.
-- **`stream_events.py`**: `EventMapper` turns raw LangGraph chunks into a small JSON event protocol. It tags each event with the subagent it came from, removes duplicate messages, and parses evaluator reports.
-- **`main.py`**: SSE endpoints, the thread history API (read through the graph, so no container is needed), and file serving from the thread's sandbox or the host `output/` folder.
+- **`backend/agent_runner.py`**: `DeepAgentRunner` builds the deep agent (`create_deep_agent`) with custom tools, local and A2A subagents, skills, `AGENTS.md` memory and the todo middleware. It streams using LangGraph's v2 stream format, with subagent output included.
+- **`backend/stream_events.py`**: `EventMapper` turns raw LangGraph chunks into a small JSON event protocol. It tags each event with the subagent it came from, removes duplicate messages, and parses evaluator reports.
+- **`backend/main.py`**: SSE endpoints, the thread history API (read through the graph, so no container is needed), and file serving from the thread's sandbox or the host `output/` folder.
 
 ## Project structure
-- `main.py`: FastAPI app (streaming, threads, files, stop/resume).
-- `agent_runner.py`: `DeepAgentRunner` (agent construction, v2 streaming, crash simulation).
-- `stream_events.py`: LangGraph stream → UI event mapper and evaluator parser.
-- `docker_sandbox.py`: Docker sandbox backend (`PydanticDockerSandboxBackend`).
-- `json_saver.py`: file-backed checkpointer (`state.json`).
-- `subagent_registry.py`, `agent_list.json`: discovery of remote A2A subagents.
-- `subagents.yaml`: local subagents (`researcher`, `evaluator`).
-- `tool_manager.py`: tools (`web_search`, `download_image`, `generate_hashtags`, ...).
-- `skills/`: skill playbooks (`blog-post`, `social-media`, `code-analysis`).
-- `agents/`: standalone A2A agents (`code_analyzer`, `infotainment`, `todolist`).
-- `frontend/`: React + Vite UI.
-  - `src/api/client.js`: REST + SSE client.
-  - `src/state/threadReducer.js`: event → UI state.
-  - `src/hooks/`: `useAgentStream` (run/resume/stop) and `useThreads`.
-  - `src/components/`: Sidebar, Conversation, Timeline (message, tool and subagent cards), RunPanel (Plan / Output / Evaluation), Composer, CrashBanner.
-  - `src/styles/`: design tokens (light/dark), layout, components.
-
-## How to run
-
-Backend (needs Docker running and `OPENAI_API_KEY` / `TAVILY_API_KEY` in `.env`):
-```bash
-uvicorn main:app --reload --port 8000
+```
+backend/                  FastAPI backend (run as the `backend` package)
+  main.py                 API: streaming, threads, files, stop/resume
+  agent_runner.py         DeepAgentRunner: builds the agent, v2 streaming
+  stream_events.py        LangGraph stream -> UI events, evaluator parser
+  config.py               all paths and settings in one place
+  tool_manager.py         tools: web_search, download_image, generate_hashtags, move_file
+  subagent_registry.py    discovers remote A2A subagents
+  subagents.yaml          local subagents (researcher, evaluator)
+  agent_list.json         A2A agent URLs for local runs (localhost)
+  agent_list.compose.json A2A agent URLs inside Docker Compose (service names)
+  docker_sandbox.py       per-thread Docker sandbox backend
+  json_saver.py           file-backed checkpointer
+  prompts.py              todo-list prompts
+  Dockerfile
+agents/                   standalone A2A agents: infotainment, todolist, code_analyzer
+skills/                   skill playbooks: blog-post, social-media, code-analysis
+AGENTS.md                 brand voice + workflow (copied into every sandbox with skills/)
+frontend/                 React + Vite UI
+  src/api/client.js       REST + SSE client
+  src/state/threadReducer.js  event -> UI state
+  src/hooks/              useAgentStream (run/resume/stop), useThreads
+  src/components/         Sidebar, Conversation, Timeline, RunPanel, Composer, CrashBanner
+memory/                   runtime checkpoints: state.json, memory.json (git-ignored)
+output/                   images downloaded by the agent (git-ignored)
+docker-compose.yml        Option A: the whole stack
+Makefile                  Option B: each piece on its own
 ```
 
-Frontend:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Open http://localhost:5173. Add `?debug=1` to show the **Simulate crash** button.
+## Setup
 
-Subagent (example: infotainment):
-```bash
-docker build -t infotainment_agent agents/infotainment
+**You need:** Docker running (on Windows/WSL: start Docker Desktop and enable *Settings → Resources → WSL Integration* for your distro; `docker info` should work), plus `uv` and Node 20+ for Option B.
 
-docker run -d \
-  --name infotainment_agent \
-  -p 8004:8004 \
-  --add-host=host.docker.internal:host-gateway \
-  --env-file ./.env \
-  -v "$(pwd)/agents/infotainment:/app" \
-  infotainment_agent
+Create your `.env` once:
+```bash
+cp .env.example .env   # then fill in OPENAI_API_KEY and TAVILY_API_KEY
 ```
+
+| Service | Port |
+|---|---|
+| Frontend | http://localhost:5173 |
+| Backend API | http://localhost:8000 |
+| infotainment agent | 8004 |
+| todolist agent | 8005 |
+| code_analyzer agent | 8007 |
+
+### Option A: Docker Compose (everything)
+Starts the backend, frontend and all three A2A agents:
+```bash
+docker compose up --build
+```
+Open http://localhost:5173. Stop everything with:
+```bash
+docker compose down
+```
+Shortcuts: `make up` (detached), `make logs`, `make down`.
+
+Notes:
+- The backend mounts `/var/run/docker.sock` so it can create one sandbox container per conversation; `code_analyzer` mounts it too, to attach to those sandboxes.
+- `memory/` and `output/` are mounted from your machine, so threads survive `docker compose down`.
+- Inside Compose the backend reaches the agents by service name (`backend/agent_list.compose.json`, picked via `AGENT_LIST_PATH`).
+
+### Option B: Makefile (one piece at a time)
+Useful when you're working on one part. Install dependencies once:
+```bash
+make install
+```
+Start the A2A agents (each in its own container on localhost):
+```bash
+make agents
+```
+Or start just one: `make agent-infotainment`, `make agent-todolist`, `make agent-code-analyzer`.
+
+Then, in two terminals:
+```bash
+make be
+```
+```bash
+make fe
+```
+Open http://localhost:5173. Add `?debug=1` to the URL to show the **Simulate crash** button. Stop the agents with:
+```bash
+make agents-stop
+```
+The agents are optional: if one isn't running, the backend skips it and the rest still works.
 
 ## Configuration
+Settings live in `backend/config.py`; secrets and overrides come from `.env`:
+
 | Variable | Where | Default |
 |---|---|---|
+| `OPENAI_API_KEY`, `TAVILY_API_KEY` | `.env` | required |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` | `.env` | optional tracing |
+| `CORS_ORIGINS` | `.env`, comma-separated | `http://localhost:5173` |
+| `AGENT_LIST_PATH` | env | `backend/agent_list.json` |
 | `VITE_API_BASE` | frontend | `http://localhost:8000` |
-| `CORS_ORIGINS` | backend, comma-separated | `http://localhost:5173` |
 
 ## Streaming event protocol
 `POST /api/run` and `POST /api/resume` return Server-Sent Events. Each `data:` line is one JSON event:
