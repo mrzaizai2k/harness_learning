@@ -183,7 +183,7 @@ tweets/<slug>/image.png
 For implementation details, refer to:
 
 ```text
-reference/extract-image.md
+../blog-post/reference/extract-image.md
 ```
 
 A social media post is **not complete** until its image has been generated.

@@ -1,0 +1,60 @@
+# Whole stack: backend + frontend + the three A2A agents.
+#   cp .env.example .env   # fill in your keys
+#   docker compose up --build
+# Then open http://localhost:5173
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports: ["8000:8000"]
+    env_file: .env
+    environment:
+      # Agents are reached by service name inside the compose network
+      AGENT_LIST_PATH: /app/backend/agent_list.compose.json
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # creates one sandbox container per thread
+      - ./memory:/app/memory                        # checkpoints survive restarts
+      - ./output:/app/output                        # downloaded images
+    depends_on: [infotainment, todolist, code_analyzer]
+
+  frontend:
+    image: node:20-slim
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    ports: ["5173:5173"]
+    environment:
+      VITE_API_BASE: http://localhost:8000  # called from your browser, so localhost
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  # keep container deps separate from the host's
+    depends_on: [backend]
+
+  infotainment:
+    build: agents/infotainment
+    ports: ["8004:8004"]
+    env_file: .env
+    environment:
+      INFOTAINMENT_BASE_URL: http://infotainment:8004
+    volumes:
+      - ./agents/infotainment:/app
+
+  todolist:
+    build: agents/todolist
+    ports: ["8005:8005"]
+    env_file: .env
+    environment:
+      TODO_AGENT_BASE_URL: http://todolist:8005
+    volumes:
+      - ./agents/todolist:/app
+
+  code_analyzer:
+    build: agents/code_analyzer
+    ports: ["8007:8007"]
+    env_file: .env
+    environment:
+      CODE_ANALYZER_BASE_URL: http://code_analyzer:8007
+    volumes:
+      - ./agents/code_analyzer:/app
+      - /var/run/docker.sock:/var/run/docker.sock  # attaches to the backend's sandbox containers

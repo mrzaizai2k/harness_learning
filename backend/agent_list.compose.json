@@ -1,0 +1,14 @@
+{
+  "infotainment": {
+    "url": "http://infotainment:8004",
+    "enabled": true
+  },
+  "todolist": {
+    "url": "http://todolist:8005",
+    "enabled": true
+  },
+  "code_analyzer": {
+    "url": "http://code_analyzer:8007",
+    "enabled": true
+  }
+}

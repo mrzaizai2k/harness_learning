@@ -1,33 +1,12 @@
 """
-FastAPI SSE wrapper around DeepAgentRunner.
+FastAPI SSE backend for Content Studio.
 
-Endpoints
----------
-POST /api/run          {task, thread_id?}  -> starts a new task, streams SSE
-POST /api/resume       {thread_id}         -> resumes a crashed task, streams SSE
-POST /api/arm_crash    {thread_id}         -> arms that thread's crash flag (fires on next tool call)
-GET  /api/state/{tid}                      -> {"paused": bool}
-POST /api/close/{tid}                      -> stops and removes that thread's Docker container
-
-Per-thread isolation
----------------------
-Each conversation `thread_id` gets its OWN `DeepAgentRunner`, and therefore
-its OWN Docker container (named `deepagents_sandbox_<thread_id>`). Threads no
-longer share a filesystem inside the same container. The `model` (ChatOpenAI
-client) and `checkpointer` (JsonFileSaver) ARE shared across all threads --
-those are cheap/safe to share and the checkpointer already multiplexes
-threads via `thread_id` in its `config`, same as the original single-runner
-design; only the sandbox needed to be split out.
-
-File Copying
-------------
-When a new Docker container is created for a thread, all files from the
-project directory (respecting .dockerignore) are automatically copied into
-the container's /workspace directory. This ensures each container has access
-to your project files (agents.md, skills/, etc.).
+Each conversation `thread_id` gets its own DeepAgentRunner and Docker sandbox
+(project files are copied into /workspace). The model client and the
+checkpointer are shared across threads.
 
 Run with:
-    uvicorn main:app --reload --port 8000
+    uvicorn backend.main:app --reload --port 8000
 """
 
 import json
@@ -35,7 +14,7 @@ import asyncio
 import mimetypes
 import os
 import shlex
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,17 +23,16 @@ from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
 
-from agent_runner import DeepAgentRunner
-from stream_events import EventMapper, file_kind
-from json_saver import JsonFileSaver
+from backend import config
+from backend.agent_runner import DeepAgentRunner
+from backend.stream_events import EventMapper, file_kind
+from backend.json_saver import JsonFileSaver
 
 app = FastAPI()
 
-_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
+    allow_origins=config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -62,11 +40,11 @@ app.add_middleware(
 # Shared across every thread: cheap to construct, and JsonFileSaver is
 # designed to multiplex many threads over one store. Only the Docker
 # backend is actually duplicated per thread (see RunnerPool below).
-_shared_model = ChatOpenAI(model="gpt-5.4", api_key=os.environ.get("OPENAI_API_KEY"))
-_shared_checkpointer = JsonFileSaver(state_path="state.json", memory_path="memory.json")
+_shared_model = ChatOpenAI(model=config.MODEL_NAME)  # reads OPENAI_API_KEY from env
+_shared_checkpointer = JsonFileSaver(state_path=config.STATE_PATH, memory_path=config.MEMORY_PATH)
 
-# Project directory to copy files from (defaults to where this file lives)
-_project_root = os.path.realpath(os.path.dirname(__file__))
+# Project directory copied into each sandbox
+_project_root = str(config.PROJECT_ROOT)
 
 
 class RunnerPool:
@@ -90,9 +68,9 @@ class RunnerPool:
                 checkpointer=_shared_checkpointer,
                 root_dir=self._project_root,
                 use_docker=True,
-                docker_runtime="python-minimal",
+                docker_runtime=config.SANDBOX_RUNTIME,
                 docker_container_name=f"deepagents_sandbox_{thread_id}",
-                docker_work_dir="/workspace",
+                docker_work_dir=config.SANDBOX_WORKDIR,
             )
             print(f"✓ Docker sandbox ready for thread: {thread_id}")
         return self._runners[thread_id]
@@ -137,7 +115,7 @@ def sse_format(event: dict) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
-_SENTINEL = object()
+_SENTINEL: Any = object()
 
 
 async def sse_from_sync_generator(gen):
@@ -298,7 +276,7 @@ async def get_thread(thread_id: str):
 # ---------------------------------------------------------------------- #
 # The agent's built-in file tools write inside the thread's Docker sandbox,
 # while `download_image` / `move_file` (tool_manager.py) write on the host.
-_CONTENT_DIRS = ("blogs", "research", "output", "linkedin", "tweets")
+_CONTENT_DIRS = config.CONTENT_DIRS
 
 
 def _clean_rel_path(path: str) -> str:
@@ -325,10 +303,11 @@ async def list_files(thread_id: str):
     """Content files in the thread's sandbox (blogs/, research/, output/ …)."""
     runner = pool.get(thread_id)
     files: list[dict] = []
-    if runner is not None and hasattr(runner.backend, "execute"):
+    execute = getattr(runner.backend, "execute", None) if runner is not None else None
+    if execute is not None:
         dirs = " ".join(shlex.quote(d) for d in _CONTENT_DIRS)
         cmd = f"cd /workspace && for d in {dirs}; do [ -d \"$d\" ] && find \"$d\" -type f; done; true"
-        result = await asyncio.to_thread(runner.backend.execute, cmd)
+        result = await asyncio.to_thread(execute, cmd)
         for line in (getattr(result, "output", "") or "").splitlines():
             line = line.strip()
             if line:

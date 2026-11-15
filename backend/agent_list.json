@@ -1,0 +1,14 @@
+{
+  "infotainment": {
+    "url": "http://localhost:8004",
+    "enabled": true
+  },
+  "todolist": {
+    "url": "http://localhost:8005",
+    "enabled": true
+  },
+  "code_analyzer": {
+    "url": "http://localhost:8007",
+    "enabled": true
+  }
+}

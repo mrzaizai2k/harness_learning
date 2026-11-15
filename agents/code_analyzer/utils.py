@@ -34,11 +34,3 @@ def timeit(func):
         return async_wrapper
     else:
         return sync_wrapper
-    
-def extract_json(text: str) -> dict:
-    start_index = text.find('{')
-    end_index = text.rfind('}') + 1
-    json_string = text[start_index:end_index]
-    json_string = json_string.replace('true', 'True').replace('false', 'False').replace('null', 'None')
-    result = eval(json_string)
-    return result

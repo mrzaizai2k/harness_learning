@@ -6,17 +6,22 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
+# Virtual environments and secrets
 .venv
 .env
+agents/**/.env
 .flaky_read_markers
-*.json
-frontend/node_modules/
 
-sample_queries.txt
+# Runtime data
+memory/
 output/
-code_base_c_test/
 *.tmp
-# Frontend deps (overrides *.json above)
-!frontend/package.json
-!frontend/package-lock.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Local scratch
+sample_queries.txt
+code_base_c_test/
+shared/
